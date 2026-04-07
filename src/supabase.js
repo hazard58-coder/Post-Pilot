@@ -3,22 +3,80 @@
 // Handles Auth, DB (PostgREST), and session management
 // ─────────────────────────────────────────────────────────────
 
-const SUPABASE_URL     = window.__ENV__?.SUPABASE_URL     || '';
+const SUPABASE_URL      = window.__ENV__?.SUPABASE_URL      || '';
 const SUPABASE_ANON_KEY = window.__ENV__?.SUPABASE_ANON_KEY || '';
-const SESSION_KEY      = 'pp_session';
+const SESSION_KEY       = 'pp_session';
+const REQUEST_TIMEOUT_MS = 12_000;
+const MAX_RETRIES        = 2;
+
+// ── Helpers ──────────────────────────────────────────────────
+
+/**
+ * fetch() wrapped with an AbortController timeout.
+ * Throws a descriptive error on timeout instead of hanging.
+ */
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('Request timed out after 12 seconds');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Retry a fetch operation on transient 5xx / network errors.
+ * Does NOT retry 4xx (auth/validation failures should surface immediately).
+ */
+async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, options);
+      // Retry on server errors; surface client errors immediately
+      if (res.status >= 500 && attempt < retries) {
+        await delay(300 * (attempt + 1));
+        continue;
+      }
+      return res;
+    } catch (e) {
+      // Retry on network / timeout errors
+      if (attempt < retries) {
+        await delay(300 * (attempt + 1));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+const delay = ms => new Promise(r => setTimeout(r, ms));
+
+/** Validate that a value looks like a UUID to prevent path injection. */
+function assertUUID(id) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    throw new Error(`Invalid record ID format: ${id}`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
 
 class SupabaseClient {
   constructor(url, key) {
-    this.url          = url;
-    this.key          = key;
-    this.accessToken  = null;
-    this.refreshToken = null;
-    this.user         = null;
-    this.listeners    = new Set();
+    this.url           = url;
+    this.key           = key;
+    this.accessToken   = null;
+    this.refreshToken  = null;
+    this.user          = null;
+    this.listeners     = new Set();
+    this._refreshTimer = null;
   }
 
   get configured() {
-    return this.url && this.key && !this.url.includes('YOUR_PROJECT');
+    return !!(this.url && this.key && !this.url.includes('YOUR_PROJECT'));
   }
 
   headers() {
@@ -27,51 +85,101 @@ class SupabaseClient {
     return h;
   }
 
-  subscribe(fn)  { this.listeners.add(fn);    return () => this.listeners.delete(fn); }
-  notify(ev, s)  { this.listeners.forEach(fn => fn(ev, s)); }
+  subscribe(fn)    { this.listeners.add(fn);            return () => this.listeners.delete(fn); }
+  _notify(ev, s)   { this.listeners.forEach(fn => fn(ev, s)); }
 
   // ── AUTH ─────────────────────────────────────────────────────
 
   async signUp(email, password, displayName) {
-    const res = await fetch(`${this.url}/auth/v1/signup`, {
+    const res = await fetchWithRetry(`${this.url}/auth/v1/signup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: this.key },
       body: JSON.stringify({ email, password, data: { display_name: displayName } }),
     });
     const data = await res.json();
-    if (data.error || data.msg) throw new Error(data.error?.message || data.msg || 'Sign up failed');
-    if (data.access_token) { this.setSession(data); return { user: data.user, confirmEmail: false }; }
+    if (!res.ok || data.error || data.msg) {
+      throw new Error(data.error?.message || data.msg || 'Sign up failed');
+    }
+    if (data.access_token) {
+      this._setSession(data);
+      return { user: data.user, confirmEmail: false };
+    }
     return { user: data.user || data, confirmEmail: true };
   }
 
   async signIn(email, password) {
-    const res = await fetch(`${this.url}/auth/v1/token?grant_type=password`, {
+    const res = await fetchWithRetry(`${this.url}/auth/v1/token?grant_type=password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: this.key },
       body: JSON.stringify({ email, password }),
     });
     const data = await res.json();
-    if (data.error || data.error_description)
+    if (!res.ok || data.error || data.error_description) {
       throw new Error(data.error_description || data.error || 'Sign in failed');
-    this.setSession(data);
+    }
+    this._setSession(data);
     return { user: data.user };
   }
 
   async signOut() {
-    try { await fetch(`${this.url}/auth/v1/logout`, { method: 'POST', headers: this.headers() }); } catch {}
-    this.accessToken = null; this.refreshToken = null; this.user = null;
+    if (this._refreshTimer) clearTimeout(this._refreshTimer);
+    try {
+      await fetchWithTimeout(`${this.url}/auth/v1/logout`, {
+        method: 'POST',
+        headers: this.headers(),
+      });
+    } catch {
+      // Best-effort logout — clear local state regardless
+    }
+    this.accessToken  = null;
+    this.refreshToken = null;
+    this.user         = null;
     localStorage.removeItem(SESSION_KEY);
-    this.notify('SIGNED_OUT', null);
+    this._notify('SIGNED_OUT', null);
   }
 
-  setSession(data) {
+  _setSession(data) {
     this.accessToken  = data.access_token;
     this.refreshToken = data.refresh_token;
     this.user         = data.user;
     localStorage.setItem(SESSION_KEY, JSON.stringify({
-      access_token: data.access_token, refresh_token: data.refresh_token, user: data.user,
+      access_token:  data.access_token,
+      refresh_token: data.refresh_token,
+      user:          data.user,
+      expires_in:    data.expires_in,
     }));
-    this.notify('SIGNED_IN', data);
+    this._notify('SIGNED_IN', data);
+    // Schedule proactive token refresh 60s before expiry (min 10s)
+    if (data.expires_in) {
+      this._scheduleRefresh(data.expires_in);
+    }
+  }
+
+  _scheduleRefresh(expiresIn) {
+    if (this._refreshTimer) clearTimeout(this._refreshTimer);
+    const delayMs = Math.max(10_000, (expiresIn - 60) * 1_000);
+    this._refreshTimer = setTimeout(async () => {
+      try {
+        if (this.refreshToken) await this._doTokenRefresh();
+      } catch {
+        // Refresh failed — session has expired; sign out cleanly
+        await this.signOut();
+      }
+    }, delayMs);
+  }
+
+  async _doTokenRefresh() {
+    const res = await fetchWithRetry(`${this.url}/auth/v1/token?grant_type=refresh_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: this.key },
+      body: JSON.stringify({ refresh_token: this.refreshToken }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.access_token) {
+      throw new Error('Token refresh failed');
+    }
+    this._setSession(data);
+    return data;
   }
 
   async restoreSession() {
@@ -79,75 +187,129 @@ class SupabaseClient {
     if (!raw) return null;
     try {
       const stored = JSON.parse(raw);
-      this.accessToken = stored.access_token; this.refreshToken = stored.refresh_token; this.user = stored.user;
-      const res = await fetch(`${this.url}/auth/v1/token?grant_type=refresh_token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', apikey: this.key },
-        body: JSON.stringify({ refresh_token: this.refreshToken }),
-      });
-      const data = await res.json();
-      if (data.access_token) { this.setSession(data); return data; }
-      this.signOut(); return null;
-    } catch { this.signOut(); return null; }
+      if (!stored.access_token || !stored.refresh_token) {
+        localStorage.removeItem(SESSION_KEY);
+        return null;
+      }
+      this.accessToken  = stored.access_token;
+      this.refreshToken = stored.refresh_token;
+      this.user         = stored.user;
+      return await this._doTokenRefresh();
+    } catch {
+      // Stored session is invalid — clear it and return null (not sign out,
+      // which would fire SIGNED_OUT event unnecessarily on page load)
+      this.accessToken  = null;
+      this.refreshToken = null;
+      this.user         = null;
+      localStorage.removeItem(SESSION_KEY);
+      return null;
+    }
   }
 
   async resetPassword(email) {
-    const res = await fetch(`${this.url}/auth/v1/recover`, {
+    const res = await fetchWithRetry(`${this.url}/auth/v1/recover`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: this.key },
       body: JSON.stringify({ email }),
     });
-    if (!res.ok) { const d = await res.json(); throw new Error(d.msg || 'Reset failed'); }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.msg || d.error_description || 'Password reset failed');
+    }
   }
 
   // ── DB (PostgREST) ───────────────────────────────────────────
 
   async query(table, { select = '*', filters = [], order, limit } = {}) {
-    let url = `${this.url}/rest/v1/${table}?select=${select}`;
-    filters.forEach(([col, op, val]) => (url += `&${col}=${op}.${val}`));
-    if (order) url += `&order=${order}`;
-    if (limit)  url += `&limit=${limit}`;
-    const res = await fetch(url, { headers: this.headers() });
-    if (!res.ok) throw new Error(`Query failed: ${res.statusText}`);
+    // Encode table name and all param values to prevent injection
+    let url = `${this.url}/rest/v1/${encodeURIComponent(table)}?select=${encodeURIComponent(select)}`;
+    filters.forEach(([col, op, val]) => {
+      url += `&${encodeURIComponent(col)}=${encodeURIComponent(op)}.${encodeURIComponent(val)}`;
+    });
+    if (order) url += `&order=${encodeURIComponent(order)}`;
+    if (limit) url += `&limit=${encodeURIComponent(String(limit))}`;
+    const res = await fetchWithRetry(url, { headers: this.headers() });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.message || `Query failed: ${res.status} ${res.statusText}`);
+    }
     return res.json();
   }
 
   async insert(table, rows) {
-    const res = await fetch(`${this.url}/rest/v1/${table}`, {
+    const res = await fetchWithRetry(`${this.url}/rest/v1/${encodeURIComponent(table)}`, {
       method: 'POST',
       headers: { ...this.headers(), Prefer: 'return=representation' },
       body: JSON.stringify(rows),
     });
-    if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Insert failed'); }
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.message || e.details || `Insert failed: ${res.status}`);
+    }
     return res.json();
   }
 
   async update(table, id, data) {
-    const res = await fetch(`${this.url}/rest/v1/${table}?id=eq.${id}`, {
-      method: 'PATCH',
-      headers: { ...this.headers(), Prefer: 'return=representation' },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error('Update failed');
+    assertUUID(id);
+    const res = await fetchWithRetry(
+      `${this.url}/rest/v1/${encodeURIComponent(table)}?id=eq.${encodeURIComponent(id)}`,
+      {
+        method: 'PATCH',
+        headers: { ...this.headers(), Prefer: 'return=representation' },
+        body: JSON.stringify(data),
+      }
+    );
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.message || `Update failed: ${res.status}`);
+    }
     return res.json();
   }
 
   async delete(table, id) {
-    const res = await fetch(`${this.url}/rest/v1/${table}?id=eq.${id}`, {
-      method: 'DELETE', headers: this.headers(),
-    });
-    if (!res.ok) throw new Error('Delete failed');
+    assertUUID(id);
+    const res = await fetchWithRetry(
+      `${this.url}/rest/v1/${encodeURIComponent(table)}?id=eq.${encodeURIComponent(id)}`,
+      { method: 'DELETE', headers: this.headers() }
+    );
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.message || `Delete failed: ${res.status}`);
+    }
   }
 
   // ── REALTIME (polling fallback) ──────────────────────────────
 
-  subscribeToTable(table, callback, intervalMs = 5000) {
+  subscribeToTable(table, callback, intervalMs = 8_000) {
+    let active = true;
+    let lastFetch = null;
+
     const poll = async () => {
-      try { const data = await this.query(table, { order: 'created_at.desc', limit: 200 }); callback(data); } catch {}
+      if (!active || !this.accessToken) return;
+      try {
+        const filters = lastFetch
+          ? [['created_at', 'gt', lastFetch]]
+          : [];
+        const data = await this.query(table, {
+          filters,
+          order: 'scheduled_date.asc',
+          limit: 500,
+        });
+        if (active && data) {
+          lastFetch = new Date().toISOString();
+          callback(data);
+        }
+      } catch {
+        // Polling errors are non-fatal; retry next interval
+      }
     };
-    poll();
+
+    // Initial full load is handled by loadPosts(); polling picks up delta changes
     const id = setInterval(poll, intervalMs);
-    return () => clearInterval(id);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
   }
 }
 
