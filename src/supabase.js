@@ -282,14 +282,14 @@ class SupabaseClient {
 
   subscribeToTable(table, callback, intervalMs = 8_000) {
     let active = true;
-    let lastFetch = null;
+    // Start from now — loadPosts() already fetched everything up to this moment.
+    // Using updated_at means edits by other users are also picked up (not just new inserts).
+    let lastFetch = new Date().toISOString();
 
     const poll = async () => {
       if (!active || !this.accessToken) return;
       try {
-        const filters = lastFetch
-          ? [['created_at', 'gt', lastFetch]]
-          : [];
+        const filters = [['updated_at', 'gt', lastFetch]];
         const data = await this.query(table, {
           filters,
           order: 'scheduled_date.asc',

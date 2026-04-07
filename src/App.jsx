@@ -45,9 +45,10 @@ const postToDb = (post, userId, companyId) => ({
   post_type:      post.postType,
   hashtags:       post.hashtags,
   engagement:     post.engagement,
-  media_urls:     post.mediaUrls || [],
-  category:       post.category  || '',
-  company_id:     post.companyId || companyId,
+  media_urls:     post.mediaUrls  || [],
+  category:       post.category   || '',
+  company_id:     post.companyId  || companyId,
+  per_network:    post.perNetwork || {},
 });
 
 const dbToPost = (r, fallbackCompanyId) => ({
@@ -61,9 +62,22 @@ const dbToPost = (r, fallbackCompanyId) => ({
   engagement:    r.engagement,
   category:      r.category      || '',
   mediaUrls:     r.media_urls    || [],
+  perNetwork:    r.per_network   || {},
   createdBy:     r.user_id,
   companyId:     r.company_id    || fallbackCompanyId,
 });
+
+/**
+ * Strip the appended hashtag suffix from stored content when loading a post
+ * for editing. On save, hashtags are appended as "\n\n#tag1 #tag2"; on re-load
+ * both the content textarea AND the hashtags field would be pre-filled,
+ * causing them to double on every subsequent save.
+ */
+const stripHashtagSuffix = (content, hashtags) => {
+  if (!hashtags?.length) return content;
+  const suffix = '\n\n' + hashtags.join(' ');
+  return content.endsWith(suffix) ? content.slice(0, -suffix.length) : content;
+};
 
 const isValidEmail = email =>
   /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email).toLowerCase().trim());
@@ -186,11 +200,19 @@ export default function PostPilotApp() {
   const deleteCompany = useCallback(id => {
     setCompanies(prev => {
       const remaining = prev.filter(c => c.id !== id);
-      // Use functional updater for activeCompanyId to avoid stale closure
       setActiveCompanyId(current =>
         current === id && remaining.length > 0 ? remaining[0].id : current
       );
       return remaining;
+    });
+    // Remove the deleted company from every user's assignment list so stale
+    // IDs don't accumulate in localStorage and confuse the access-control logic.
+    setUserAssignments(prev => {
+      const next = {};
+      for (const [email, coIds] of Object.entries(prev)) {
+        next[email] = coIds.filter(cid => cid !== id);
+      }
+      return next;
     });
   }, []);
 
@@ -401,16 +423,16 @@ function MainApp({ onSignOut }) {
   const { user, usingDemo, isAdmin } = useAuth();
   const { companies, activeCompanyId, setActiveCompanyId, userAssignments } = useCompany();
 
-  const [tab,          setTab]          = useState('dashboard');
-  const [posts,        setPosts]        = useState([]);
-  const [showComposer, setShowComposer] = useState(false);
-  const [editingPost,  setEditingPost]  = useState(null);
-  const [toast,        setToast]        = useState(null);
-  const [connected,    setConnected]    = useState(['instagram','facebook','twitter','linkedin','tiktok']);
-  const [syncing,      setSyncing]      = useState(false);
-  const [showUser,     setShowUser]     = useState(false);
-  const [showAI,       setShowAI]       = useState(false);
-  const [showBulk,     setShowBulk]     = useState(false);
+  const [tab,         setTab]         = useState('dashboard');
+  const [posts,       setPosts]       = useState([]);
+  // Single modal state ensures only one modal is ever open at a time,
+  // which prevents stacked Escape-key handlers from closing multiple modals.
+  const [activeModal, setActiveModal] = useState(null); // null | 'composer' | 'ai' | 'bulk'
+  const [editingPost, setEditingPost] = useState(null);
+  const [toast,       setToast]       = useState(null);
+  const [connected,   setConnected]   = useState(['instagram','facebook','twitter','linkedin','tiktok']);
+  const [syncing,     setSyncing]     = useState(false);
+  const [showUser,    setShowUser]    = useState(false);
 
   // ── Toast with proper cleanup ──────────────────────────────
   const toastTimerRef = useRef(null);
@@ -422,9 +444,13 @@ function MainApp({ onSignOut }) {
     toastTimerRef.current = setTimeout(() => setToast(null), 3500);
   }, []);
 
-  // ── Stale-proof posts ref (avoids stale closure in savePost) ──
+  // ── Stale-proof refs ───────────────────────────────────────────
   const postsRef = useRef(posts);
   useEffect(() => { postsRef.current = posts; }, [posts]);
+  // Keeps the polling subscription's closure in sync with the current
+  // active company without needing to teardown/recreate the subscription.
+  const activeCompanyIdRef = useRef(activeCompanyId);
+  useEffect(() => { activeCompanyIdRef.current = activeCompanyId; }, [activeCompanyId]);
 
   // ── Company visibility ──────────────────────────────────────
   const userCompanies = useMemo(() => {
@@ -435,9 +461,11 @@ function MainApp({ onSignOut }) {
     return companies.filter(c => assigned.includes(c.id));
   }, [isAdmin, companies, userAssignments, user?.email]);
 
-  // Posts scoped to the active company
+  // Posts scoped to the active company — strict equality only.
+  // The old `!p.companyId` bypass let posts with no/empty companyId leak into
+  // every company's view; dbToPost always provides a fallback so this is safe.
   const companyPosts = useMemo(
-    () => posts.filter(p => !p.companyId || p.companyId === activeCompanyId),
+    () => posts.filter(p => p.companyId === activeCompanyId),
     [posts, activeCompanyId]
   );
 
@@ -465,7 +493,9 @@ function MainApp({ onSignOut }) {
       if (!incoming?.length) return;
       setPosts(prev => {
         const map = new Map(prev.map(p => [p.id, p]));
-        incoming.forEach(r => map.set(r.id, dbToPost(r, activeCompanyId)));
+        // Use ref so the callback always sees the current activeCompanyId even
+        // though the subscription closure was created once at mount.
+        incoming.forEach(r => map.set(r.id, dbToPost(r, activeCompanyIdRef.current)));
         return Array.from(map.values())
           .sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
       });
@@ -484,7 +514,7 @@ function MainApp({ onSignOut }) {
         : [...prev, post];
       return list.sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
     });
-    setShowComposer(false);
+    setActiveModal(null);
     setEditingPost(null);
     notify(post.status === 'draft' ? 'Draft saved!' : 'Post scheduled! 🚀');
 
@@ -514,7 +544,32 @@ function MainApp({ onSignOut }) {
     }
   }, [usingDemo, notify, loadPosts]);
 
-  const editPost      = useCallback(p => { setEditingPost(p); setShowComposer(true); }, []);
+  const editPost = useCallback(p => { setEditingPost(p); setActiveModal('composer'); }, []);
+
+  // Bulk import: single batch INSERT instead of N concurrent savePost calls.
+  // Optimistic update happens immediately; cloud sync fires once for all rows.
+  const handleBulkImport = useCallback(async items => {
+    setPosts(prev => {
+      const map = new Map(prev.map(p => [p.id, p]));
+      items.forEach(p => map.set(p.id, p));
+      return Array.from(map.values())
+        .sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
+    });
+    setActiveModal(null);
+
+    if (!usingDemo && supabase.configured) {
+      notify(`Syncing ${items.length} post${items.length !== 1 ? 's' : ''}…`);
+      try {
+        const rows = items.map(p => postToDb(p, user.id, p.companyId || activeCompanyId));
+        await supabase.insert('posts', rows);
+        notify(`${items.length} post${items.length !== 1 ? 's' : ''} imported!`);
+      } catch (e) {
+        notify(`Cloud sync failed: ${e.message}. Posts saved locally — reload to retry.`, 'error');
+      }
+    } else {
+      notify(`${items.length} post${items.length !== 1 ? 's' : ''} imported!`);
+    }
+  }, [usingDemo, user, notify, activeCompanyId]);
   const toggleConnect = useCallback(pid => setConnected(prev =>
     prev.includes(pid) ? prev.filter(p => p !== pid) : [...prev, pid]
   ), []);
@@ -551,9 +606,9 @@ function MainApp({ onSignOut }) {
         </div>
 
         <div className="header-right">
-          <button className="btn-icon" onClick={() => setShowAI(true)}   title="AI Assistant"  aria-label="Open AI Assistant">🤖</button>
-          <button className="btn-icon" onClick={() => setShowBulk(true)} title="Bulk Upload"   aria-label="Open Bulk Upload">📦</button>
-          <button className="btn-new" onClick={() => { setEditingPost(null); setShowComposer(true); }}>
+          <button className="btn-icon" onClick={() => setActiveModal('ai')}   title="AI Assistant"  aria-label="Open AI Assistant">🤖</button>
+          <button className="btn-icon" onClick={() => setActiveModal('bulk')} title="Bulk Upload"   aria-label="Open Bulk Upload">📦</button>
+          <button className="btn-new" onClick={() => { setEditingPost(null); setActiveModal('composer'); }}>
             <span className="btn-new-plus" aria-hidden="true">+</span> New Post
           </button>
           <div className="user-wrap">
@@ -603,26 +658,37 @@ function MainApp({ onSignOut }) {
       )}
 
       <main className="main">
-        {tab === 'dashboard' && <Dashboard posts={companyPosts} onEdit={editPost} onNew={() => { setEditingPost(null); setShowComposer(true); }} connected={connected} />}
-        {tab === 'calendar'  && <Calendar  posts={companyPosts} onEdit={editPost} onNew={d => { setEditingPost({ prefillDate: d }); setShowComposer(true); }} />}
-        {tab === 'queue'     && <QueueView posts={companyPosts} onEdit={editPost} onNew={() => { setEditingPost(null); setShowComposer(true); }} />}
+        {tab === 'dashboard' && <Dashboard posts={companyPosts} onEdit={editPost} onNew={() => { setEditingPost(null); setActiveModal('composer'); }} connected={connected} />}
+        {tab === 'calendar'  && <Calendar  posts={companyPosts} onEdit={editPost} onNew={d => { setEditingPost({ prefillDate: d }); setActiveModal('composer'); }} />}
+        {tab === 'queue'     && <QueueView posts={companyPosts} onEdit={editPost} onNew={() => { setEditingPost(null); setActiveModal('composer'); }} />}
         {tab === 'posts'     && <PostsList posts={companyPosts} onEdit={editPost} onDelete={deletePost} />}
         {tab === 'analytics' && <Analytics posts={companyPosts} />}
         {tab === 'platforms' && <PlatformsView connected={connected} onToggle={toggleConnect} />}
         {tab === 'admin'     && isAdmin && <AdminPanel />}
       </main>
 
-      {showComposer && (
+      {activeModal === 'composer' && (
         <Composer
           post={editingPost}
           connected={connected}
           onSave={savePost}
-          onClose={() => { setShowComposer(false); setEditingPost(null); }}
+          onClose={() => { setActiveModal(null); setEditingPost(null); }}
           companyId={activeCompanyId}
         />
       )}
-      {showAI   && <AIAssistant onClose={() => setShowAI(false)}   onInsert={text => { setShowAI(false); setEditingPost({ prefillContent: text }); setShowComposer(true); }} />}
-      {showBulk && <BulkUpload  onClose={() => setShowBulk(false)} onImport={items => { items.forEach(p => savePost(p)); setShowBulk(false); notify(`${items.length} posts imported!`); }} connected={connected} />}
+      {activeModal === 'ai' && (
+        <AIAssistant
+          onClose={() => setActiveModal(null)}
+          onInsert={text => { setEditingPost({ prefillContent: text }); setActiveModal('composer'); }}
+        />
+      )}
+      {activeModal === 'bulk' && (
+        <BulkUpload
+          onClose={() => setActiveModal(null)}
+          onImport={handleBulkImport}
+          connected={connected}
+        />
+      )}
     </div>
   );
 }
@@ -1092,7 +1158,14 @@ function Calendar({ posts, onEdit, onNew }) {
   const [cur,  setCur]  = useState(new Date());
   const [view, setView] = useState('month');
   const maxD  = useMemo(() => { const d = new Date(); d.setMonth(d.getMonth() + 6); return d; }, []);
-  const today = useMemo(() => new Date(), []); // stable reference
+  // useState (not useMemo) so it can be updated at midnight without remounting.
+  const [today, setToday] = useState(() => new Date());
+  useEffect(() => {
+    const now       = new Date();
+    const midnight  = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const timer     = setTimeout(() => setToday(new Date()), midnight - now);
+    return () => clearTimeout(timer);
+  }, [today]); // re-schedule after each daily tick
 
   const daysInMonth = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).getDate();
   const firstDow    = new Date(cur.getFullYear(), cur.getMonth(), 1).getDay();
@@ -1298,7 +1371,7 @@ function PostsList({ posts, onEdit, onDelete }) {
             )}
             <div className="pc-actions">
               <button className="act-btn" onClick={() => onEdit(post)}>✏️ Edit</button>
-              <button className="act-btn" onClick={() => onEdit({ ...post, id: generateId(), status: 'draft', engagement: null })}>📋 Duplicate</button>
+              <button className="act-btn" onClick={() => onEdit({ ...post, id: generateId(), status: 'draft', engagement: null, isDuplicate: true })}>📋 Duplicate</button>
               <button className="act-btn act-del" onClick={() => confirmDelete(post)}>🗑️ Delete</button>
             </div>
           </div>
@@ -1320,11 +1393,13 @@ function PostsList({ posts, onEdit, onDelete }) {
 // ANALYTICS
 // ─────────────────────────────────────────────────────────────
 function Analytics({ posts }) {
-  const pub  = posts.filter(p => p.status === 'published' && p.engagement);
-  const tl   = pub.reduce((s, p) => s + (p.engagement?.likes        || 0), 0);
-  const tc   = pub.reduce((s, p) => s + (p.engagement?.comments     || 0), 0);
-  const ts   = pub.reduce((s, p) => s + (p.engagement?.shares       || 0), 0);
-  const ti   = pub.reduce((s, p) => s + (p.engagement?.impressions  || 0), 0);
+  // Memoized so downstream useMemo hooks get a stable reference and only
+  // recompute when posts actually change.
+  const pub  = useMemo(() => posts.filter(p => p.status === 'published' && p.engagement), [posts]);
+  const tl   = useMemo(() => pub.reduce((s, p) => s + (p.engagement?.likes       || 0), 0), [pub]);
+  const tc   = useMemo(() => pub.reduce((s, p) => s + (p.engagement?.comments    || 0), 0), [pub]);
+  const ts   = useMemo(() => pub.reduce((s, p) => s + (p.engagement?.shares      || 0), 0), [pub]);
+  const ti   = useMemo(() => pub.reduce((s, p) => s + (p.engagement?.impressions || 0), 0), [pub]);
   const rate = ti > 0 ? ((tl + tc + ts) / ti * 100).toFixed(1) : '0';
 
   const platData = useMemo(() => {
@@ -1338,20 +1413,20 @@ function Analytics({ posts }) {
       d[pid].impressions += p.engagement?.impressions || 0;
     }));
     return d;
-  }, [pub]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pub]);
 
   const topPost = useMemo(() => [...pub].sort((a, b) => {
     const ae = (a.engagement?.likes || 0) + (a.engagement?.comments || 0);
     const be = (b.engagement?.likes || 0) + (b.engagement?.comments || 0);
     return be - ae;
-  })[0], [pub]); // eslint-disable-line react-hooks/exhaustive-deps
+  })[0], [pub]);
 
   const weekData = useMemo(() => Array.from({ length: 7 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (6 - i));
     const dayPosts = pub.filter(p => new Date(p.scheduledDate).toDateString() === d.toDateString());
     const eng = dayPosts.reduce((s, p) => s + (p.engagement?.likes || 0) + (p.engagement?.comments || 0), 0);
     return { label: d.toLocaleDateString('en-US', { weekday: 'short' }), value: eng };
-  }), [pub]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [pub]);
   const maxWeek = Math.max(...weekData.map(d => d.value), 1);
 
   const totalEng = tl + tc + ts;
@@ -1360,16 +1435,15 @@ function Analytics({ posts }) {
     <div>
       <div className="analytics-top">
         {[
-          { v: tl.toLocaleString(), l: 'Total Likes',  t: '↑ 12.4%', c: '#E1306C' },
-          { v: tc.toLocaleString(), l: 'Comments',     t: '↑ 8.2%',  c: '#1D4ED8' },
-          { v: ts.toLocaleString(), l: 'Shares',       t: '↑ 5.7%',  c: '#059669' },
-          { v: ti.toLocaleString(), l: 'Impressions',  t: '↑ 22.1%', c: '#7C3AED' },
-          { v: rate + '%',          l: 'Eng. Rate',    t: '↑ 3.1%',  c: '#0891B2' },
+          { v: tl.toLocaleString(), l: 'Total Likes'  },
+          { v: tc.toLocaleString(), l: 'Comments'     },
+          { v: ts.toLocaleString(), l: 'Shares'       },
+          { v: ti.toLocaleString(), l: 'Impressions'  },
+          { v: rate + '%',          l: 'Eng. Rate'    },
         ].map(s => (
           <div key={s.l} className="a-stat">
             <span className="a-num">{s.v}</span>
             <span className="a-label">{s.l}</span>
-            <span className="a-trend" style={{ color: s.c }}>{s.t}</span>
           </div>
         ))}
       </div>
@@ -1493,10 +1567,18 @@ function PlatformsView({ connected, onToggle }) {
 // COMPOSER
 // ─────────────────────────────────────────────────────────────
 function Composer({ post, connected, onSave, onClose, companyId }) {
-  const isEdit            = !!(post?.id && !post.prefillDate && !post.prefillContent);
+  // isDuplicate flag distinguishes a duplicated post (needs INSERT) from a
+  // genuine edit (needs UPDATE). Without it, isEdit = true for duplicates
+  // because they have an id but no prefillDate/prefillContent.
+  const isEdit            = !!(post?.id && !post.prefillDate && !post.prefillContent && !post.isDuplicate);
   const effectiveCompanyId = isEdit ? (post.companyId || companyId) : companyId;
 
-  const [content,    setContent]    = useState(isEdit ? post.content : (post?.prefillContent || ''));
+  // Strip the hashtag suffix that was appended on the previous save so the
+  // body textarea and hashtag field don't both contain the same tags, which
+  // would double them on every subsequent save.
+  const [content,    setContent]    = useState(
+    isEdit ? stripHashtagSuffix(post.content, post.hashtags) : (post?.prefillContent || '')
+  );
   const [plats,      setPlats]      = useState(isEdit ? post.platforms : []);
   const [postType,   setPostType]   = useState(isEdit ? post.postType  : 'Post');
   const [schedDate,  setSchedDate]  = useState(() => {
@@ -1534,6 +1616,10 @@ function Composer({ post, connected, onSave, onClose, companyId }) {
     if (!trimmed) { setContentErr('Post content cannot be empty'); return; }
     if (!draft && plats.length === 0) { setContentErr('Select at least one platform'); return; }
     if (!draft && overLimit) { setContentErr(`Content exceeds the ${charLimit.toLocaleString()} character limit`); return; }
+    // Validate date — the browser's min attribute can be bypassed by typing directly.
+    const scheduledTime = new Date(schedDate);
+    if (isNaN(scheduledTime.getTime())) { setContentErr('Invalid scheduled date/time'); return; }
+    if (!draft && scheduledTime <= new Date()) { setContentErr('Scheduled time must be in the future'); return; }
     setContentErr('');
     const full = hashtags.trim() ? `${trimmed}\n\n${hashtags.trim()}` : trimmed;
     onSave({
@@ -1783,32 +1869,33 @@ function AIAssistant({ onClose, onInsert }) {
     abortRef.current = new AbortController();
     try {
       const p = PLATFORMS.find(x => x.id === platform);
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
+      // Route through the /api/generate serverless proxy so the Anthropic API
+      // key stays server-side and CORS is never an issue.
+      const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: abortRef.current.signal,
         body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 1000,
-          messages: [{
-            role: 'user',
-            content: `You are a social media content expert. Write a ${tone} social media post for ${p?.name || 'social media'}. Character limit: ${p?.maxChars || 2200}.\n\nTopic/prompt: ${prompt}\n\nRequirements:\n- Write ONLY the post text, no explanations\n- Include relevant emojis\n- Include a clear call to action\n- Add 3–5 relevant hashtags at the end\n- Stay within the character limit\n- Match the ${tone} tone`,
-          }],
+          prompt:   prompt.trim(),
+          tone,
+          platform: p?.name    || 'Social Media',
+          maxChars: p?.maxChars || 2200,
         }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error?.message || `API error ${res.status}`);
+        throw new Error(err.error || `Request failed: ${res.status}`);
       }
       const data = await res.json();
-      const text = data.content?.map(c => c.text || '').join('') || '';
-      if (!text) throw new Error('Empty response from AI');
-      setResult(text);
+      if (!data.text) throw new Error('Empty response from AI');
+      setResult(data.text);
     } catch (e) {
       if (e.name === 'AbortError') return; // user navigated away
-      setAiError(e.message.includes('401') || e.message.includes('403')
-        ? 'AI generation requires an API key configured server-side.'
-        : `Generation failed: ${e.message}`);
+      setAiError(
+        e.message.includes('not configured')
+          ? 'AI service not configured. Add ANTHROPIC_API_KEY to your Vercel environment variables.'
+          : `Generation failed: ${e.message}`
+      );
     } finally {
       setLoading(false);
     }
