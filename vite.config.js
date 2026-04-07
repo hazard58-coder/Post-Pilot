@@ -9,6 +9,9 @@ export default defineConfig({
       SUPABASE_ANON_KEY: JSON.stringify(process.env.VITE_SUPABASE_ANON_KEY || ''),
       ADMIN_USERNAME:    JSON.stringify(process.env.VITE_ADMIN_USERNAME     || ''),
       ADMIN_PASSWORD:    JSON.stringify(process.env.VITE_ADMIN_PASSWORD     || ''),
+      // Set VITE_DEMO_ENABLED=false to hide demo/trial access in production.
+      // Defaults to 'true' so local dev always has demo mode available.
+      DEMO_ENABLED:      JSON.stringify(process.env.VITE_DEMO_ENABLED       ?? 'true'),
     },
   },
 });

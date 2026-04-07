@@ -29,6 +29,9 @@ const useCompany     = () => useContext(CompanyContext);
 const ADMIN_USERNAME = window.__ENV__?.ADMIN_USERNAME || '';
 const ADMIN_PASSWORD = window.__ENV__?.ADMIN_PASSWORD || '';
 
+// Set VITE_DEMO_ENABLED=false in production to hide the "Try Demo" button.
+const DEMO_ENABLED   = window.__ENV__?.DEMO_ENABLED !== 'false';
+
 // ─────────────────────────────────────────────────────────────
 // PURE HELPERS  (defined outside components — not re-created on render)
 // ─────────────────────────────────────────────────────────────
@@ -255,10 +258,16 @@ function AuthScreen({ onDemo, onAdmin }) {
   const [error,    setError]    = useState('');
   const [success,  setSuccess]  = useState('');
   const [busy,     setBusy]     = useState(false);
+  const lastSubmitRef            = useRef(0);
 
   const switchMode = m => { setMode(m); setError(''); setSuccess(''); };
 
   const go = async () => {
+    // Debounce: ignore if last submit was < 1 second ago (prevents rapid double-tap)
+    const now = Date.now();
+    if (now - lastSubmitRef.current < 1000) return;
+    lastSubmitRef.current = now;
+
     setError(''); setSuccess('');
     const trimEmail = email.trim();
 
@@ -373,8 +382,12 @@ function AuthScreen({ onDemo, onAdmin }) {
             {mode === 'reset'  && <button className="link-btn" onClick={() => switchMode('login')}>← Back to sign in</button>}
           </div>
 
-          <div className="auth-divider"><span>or</span></div>
-          <button className="btn-demo" onClick={onDemo}>👋 Try Demo Mode — no account needed</button>
+          {DEMO_ENABLED && (
+            <>
+              <div className="auth-divider"><span>or</span></div>
+              <button className="btn-demo" onClick={onDemo}>👋 Try Demo Mode — no account needed</button>
+            </>
+          )}
         </div>
       </div>
     </div>
