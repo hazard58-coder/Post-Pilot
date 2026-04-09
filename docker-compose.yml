@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  postpilot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_DEMO_ENABLED: ${VITE_DEMO_ENABLED:-false}
+        VITE_ADMIN_USERNAME: ${VITE_ADMIN_USERNAME}
+        VITE_ADMIN_PASSWORD: ${VITE_ADMIN_PASSWORD}
+        VITE_APP_VERSION: ${VITE_APP_VERSION:-1.0.0}
+    ports:
+      - "3000:80"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: API service if not using Vercel
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.api
+    ports:
+      - "3001:3000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - NODE_ENV=production
+    restart: unless-stopped
+    depends_on:
+      - postpilot

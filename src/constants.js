@@ -51,15 +51,18 @@ export const CONTENT_CATEGORIES = [
 
 // ─── COMPANIES ───────────────────────────────────────────────
 export const DEMO_COMPANIES = [
-  { id: 'co-1', name: 'Acme Marketing',  industry: 'Marketing Agency',    color: '#1D4ED8', initials: 'AM' },
-  { id: 'co-2', name: 'Green Leaf Co',   industry: 'Retail & eCommerce',  color: '#059669', initials: 'GL' },
-  { id: 'co-3', name: 'Summit Media',    industry: 'Media & Publishing',  color: '#7C3AED', initials: 'SM' },
+  { id: '550e8400-e29b-41d4-a716-446655440000', name: 'Acme Marketing',  industry: 'Marketing Agency',    color: '#1D4ED8', initials: 'AM' },
+  { id: '550e8400-e29b-41d4-a716-446655440001', name: 'Green Leaf Co',   industry: 'Retail & eCommerce',  color: '#059669', initials: 'GL' },
+  { id: '550e8400-e29b-41d4-a716-446655440002', name: 'Summit Media',    industry: 'Media & Publishing',  color: '#7C3AED', initials: 'SM' },
 ];
 
 export const generateId = () =>
   typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
-    : Math.random().toString(36).substr(2, 12) + Date.now().toString(36);
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
 
 export const fmt = (d) =>
   new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });

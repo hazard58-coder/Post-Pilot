@@ -14,17 +14,12 @@ const useAuth        = () => useContext(AuthContext);
 const CompanyContext = createContext(null);
 const useCompany     = () => useContext(CompanyContext);
 
+const useCompany     = () => useContext(CompanyContext);
+
 // ─────────────────────────────────────────────────────────────
 // ADMIN CREDENTIALS
-// These are read from build-time env vars, NOT hardcoded in source.
-//
-// ⚠ PRODUCTION NOTE: Env vars injected at build time are still
-// visible in the JS bundle. For real production, validate admin
-// identity server-side via Supabase custom claims / roles.
-//
-// Set in .env.local:
-//   VITE_ADMIN_USERNAME=hazard58
-//   VITE_ADMIN_PASSWORD=Truist58!
+// ⚠ SECURITY: Remove this entire section for production.
+// Admin access should be handled server-side via Supabase service role.
 // ─────────────────────────────────────────────────────────────
 const ADMIN_USERNAME = window.__ENV__?.ADMIN_USERNAME || '';
 const ADMIN_PASSWORD = window.__ENV__?.ADMIN_PASSWORD || '';
@@ -227,6 +222,8 @@ export default function PostPilotApp() {
   }, []);
 
   const enterAdmin = useCallback(() => {
+    // ⚠ SECURITY: Remove this function for production
+    // Admin access should be server-side only
     setUsingDemo(true); setIsAdmin(true);
     setUser({ id: 'admin', email: ADMIN_USERNAME, user_metadata: { display_name: 'Admin' } });
   }, []);
@@ -453,10 +450,6 @@ function MainApp({ onSignOut }) {
   // ── Stale-proof refs ───────────────────────────────────────────
   const postsRef = useRef(posts);
   useEffect(() => { postsRef.current = posts; }, [posts]);
-  // Keeps the polling subscription's closure in sync with the current
-  // active company without needing to teardown/recreate the subscription.
-  const activeCompanyIdRef = useRef(activeCompanyId);
-  useEffect(() => { activeCompanyIdRef.current = activeCompanyId; }, [activeCompanyId]);
 
   // ── Company visibility ──────────────────────────────────────
   const userCompanies = useMemo(() => {
@@ -500,19 +493,18 @@ function MainApp({ onSignOut }) {
     // Polling picks up changes made by other users/sessions in this company
     const unsub = supabase.subscribeToTable('posts', incoming => {
       if (!incoming?.length) return;
-      const cid = activeCompanyIdRef.current;
-      // Only merge rows that belong to the currently-viewed company
-      const relevant = incoming.filter(r => r.company_id === cid);
+      // Use activeCompanyId directly - subscription recreates when it changes
+      const relevant = incoming.filter(r => r.company_id === activeCompanyId);
       if (!relevant.length) return;
       setPosts(prev => {
         const map = new Map(prev.map(p => [p.id, p]));
-        relevant.forEach(r => map.set(r.id, dbToPost(r, cid)));
+        relevant.forEach(r => map.set(r.id, dbToPost(r, activeCompanyId)));
         return Array.from(map.values())
           .sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
       });
     });
     return unsub;
-  }, [usingDemo, loadPosts]); // reload when company changes (loadPosts recreated on activeCompanyId change)
+  }, [usingDemo, loadPosts, activeCompanyId]); // Explicitly depend on activeCompanyId for subscription
 
   // ── CRUD ────────────────────────────────────────────────────
   const savePost = useCallback(async post => {
@@ -534,8 +526,9 @@ function MainApp({ onSignOut }) {
         if (exists) await supabase.update('posts', post.id, dbRow);
         else        await supabase.insert('posts', [dbRow]);
       } catch (e) {
-        notify(`Cloud sync failed: ${e.message}`, 'error');
-        // Optimistic update already applied — user sees the post; retry on next reload
+        notify(`Cloud sync failed: ${e.message}. Reloading…`, 'error');
+        // Revert optimistic update
+        loadPosts();
       }
     }
   }, [usingDemo, user, notify, activeCompanyId]);
@@ -574,7 +567,9 @@ function MainApp({ onSignOut }) {
         await supabase.insert('posts', rows);
         notify(`${items.length} post${items.length !== 1 ? 's' : ''} imported!`);
       } catch (e) {
-        notify(`Cloud sync failed: ${e.message}. Posts saved locally — reload to retry.`, 'error');
+        notify(`Cloud sync failed: ${e.message}. Reverting…`, 'error');
+        // Revert optimistic update by removing the imported posts
+        setPosts(prev => prev.filter(p => !items.some(item => item.id === p.id)));
       }
     } else {
       notify(`${items.length} post${items.length !== 1 ? 's' : ''} imported!`);

@@ -7,7 +7,7 @@
 create table if not exists public.posts (
   id             uuid        primary key default gen_random_uuid(),
   user_id        uuid        not null references auth.users(id) on delete cascade,
-  company_id     text        not null default '',
+  company_id     uuid        not null default gen_random_uuid(),
   content        text        not null default '',
   platforms      text[]      not null default '{}',
   post_type      text        not null default 'Post',
