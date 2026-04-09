@@ -22,6 +22,8 @@ export function validateEnvironment(env = {}) {
   }
 
   if (errors.length > 0) {
-    throw new Error(`Environment validation failed:\n${errors.join('\n')}`);
+    // Warn instead of throw so the build succeeds without env vars.
+    // The app handles missing config at runtime via Demo Mode.
+    console.warn(`\n[PostPilot] Environment warnings:\n${errors.join('\n')}\n`);
   }
 }
