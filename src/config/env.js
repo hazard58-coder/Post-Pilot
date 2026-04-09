@@ -1,21 +1,13 @@
-# Environment variable validation and security
+// Environment variable validation — runs in Node.js context (vite.config.js)
+// Receives the env object from Vite's loadEnv so .env.local is included.
 const ENV_SCHEMA = {
-  // Public (safe for client bundle)
-  VITE_SUPABASE_URL: { required: true, pattern: /^https:\/\/.*\.supabase\.co$/ },
+  VITE_SUPABASE_URL:      { required: true, pattern: /^https:\/\/.*\.supabase\.co$/ },
   VITE_SUPABASE_ANON_KEY: { required: true, pattern: /^eyJ/ },
-  VITE_DEMO_ENABLED: { required: false, default: 'false' },
-
-  // Server-only (never in bundle)
-  ANTHROPIC_API_KEY: { required: true, serverOnly: true },
-
-  // Build-time only (not in bundle)
-  VITE_ADMIN_USERNAME: { buildTime: true },
-  VITE_ADMIN_PASSWORD: { buildTime: true },
+  VITE_DEMO_ENABLED:      { required: false },
 };
 
-export function validateEnvironment() {
+export function validateEnvironment(env = {}) {
   const errors = [];
-  const env = { ...process.env, ...import.meta.env };
 
   for (const [key, config] of Object.entries(ENV_SCHEMA)) {
     const value = env[key];
@@ -27,17 +19,9 @@ export function validateEnvironment() {
     if (value && config.pattern && !config.pattern.test(value)) {
       errors.push(`Invalid format for ${key}`);
     }
-
-    if (config.serverOnly && typeof window !== 'undefined') {
-      errors.push(`${key} should not be in client bundle`);
-    }
   }
 
   if (errors.length > 0) {
     throw new Error(`Environment validation failed:\n${errors.join('\n')}`);
   }
-
-  return env;
 }
-
-export const env = validateEnvironment();

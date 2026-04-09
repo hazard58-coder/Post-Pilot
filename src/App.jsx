@@ -14,8 +14,6 @@ const useAuth        = () => useContext(AuthContext);
 const CompanyContext = createContext(null);
 const useCompany     = () => useContext(CompanyContext);
 
-const useCompany     = () => useContext(CompanyContext);
-
 // ─────────────────────────────────────────────────────────────
 // ADMIN CREDENTIALS
 // ⚠ SECURITY: Remove this entire section for production.
