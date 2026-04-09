@@ -14,7 +14,6 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "validate-env": "node scripts/validate-env.js",
-    "security-scan": "snyk test",
     "deploy:staging": "vercel --prod=false",
     "deploy:production": "vercel --prod=true",
     "monitor:deployment": "node scripts/monitor-deployment.js"
@@ -33,7 +32,6 @@
     "@testing-library/react": "^13.0.0",
     "@testing-library/jest-dom": "^5.0.0",
     "eslint": "^8.0.0",
-    "jest": "^29.0.0",
-    "snyk": "^1.0.0"
+    "jest": "^29.0.0"
   }
 }
