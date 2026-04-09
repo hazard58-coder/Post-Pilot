@@ -171,7 +171,6 @@ export default function PostPilotApp() {
   useEffect(() => { localStorage.setItem('pp_companies',        JSON.stringify(companies));      }, [companies]);
   useEffect(() => { localStorage.setItem('pp_active_co',        activeCompanyId);                }, [activeCompanyId]);
   useEffect(() => { localStorage.setItem('pp_user_assignments', JSON.stringify(userAssignments));}, [userAssignments]);
-  useEffect(() => { localStorage.setItem('pp_connected',        JSON.stringify(connected));      }, [connected]);
 
   // ── Auth ───────────────────────────────────────────────────
   useEffect(() => {
@@ -421,7 +420,7 @@ function AuthScreen({ onDemo, onAdmin }) {
 // ─────────────────────────────────────────────────────────────
 function MainApp({ onSignOut }) {
   const { user, usingDemo, isAdmin } = useAuth();
-  const { companies, activeCompanyId, setActiveCompanyId, userAssignments } = useCompany();
+  const { companies, activeCompanyId, userAssignments } = useCompany();
 
   const [tab,         setTab]         = useState('dashboard');
   const [posts,       setPosts]       = useState([]);
@@ -438,6 +437,8 @@ function MainApp({ onSignOut }) {
   });
   const [syncing,     setSyncing]     = useState(false);
   const [showUser,    setShowUser]    = useState(false);
+
+  useEffect(() => { localStorage.setItem('pp_connected', JSON.stringify(connected)); }, [connected]);
 
   // ── Toast with proper cleanup ──────────────────────────────
   const toastTimerRef = useRef(null);
