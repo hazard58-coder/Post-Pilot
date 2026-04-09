@@ -171,6 +171,7 @@ export default function PostPilotApp() {
   useEffect(() => { localStorage.setItem('pp_companies',        JSON.stringify(companies));      }, [companies]);
   useEffect(() => { localStorage.setItem('pp_active_co',        activeCompanyId);                }, [activeCompanyId]);
   useEffect(() => { localStorage.setItem('pp_user_assignments', JSON.stringify(userAssignments));}, [userAssignments]);
+  useEffect(() => { localStorage.setItem('pp_connected',        JSON.stringify(connected));      }, [connected]);
 
   // ── Auth ───────────────────────────────────────────────────
   useEffect(() => {
@@ -198,12 +199,11 @@ export default function PostPilotApp() {
     setCompanies(prev => prev.map(c => c.id === id ? { ...c, ...data } : c)), []);
 
   const deleteCompany = useCallback(id => {
-    setCompanies(prev => {
-      const remaining = prev.filter(c => c.id !== id);
-      setActiveCompanyId(current =>
-        current === id && remaining.length > 0 ? remaining[0].id : current
-      );
-      return remaining;
+    setCompanies(prev => prev.filter(c => c.id !== id));
+    setActiveCompanyId(current => {
+      if (current !== id) return current;
+      const remaining = companies.filter(c => c.id !== id);
+      return remaining.length > 0 ? remaining[0].id : current;
     });
     // Remove the deleted company from every user's assignment list so stale
     // IDs don't accumulate in localStorage and confuse the access-control logic.
@@ -214,7 +214,7 @@ export default function PostPilotApp() {
       }
       return next;
     });
-  }, []);
+  }, [companies]);
 
   const activeCompany = useMemo(
     () => companies.find(c => c.id === activeCompanyId) || companies[0] || null,
@@ -430,7 +430,12 @@ function MainApp({ onSignOut }) {
   const [activeModal, setActiveModal] = useState(null); // null | 'composer' | 'ai' | 'bulk'
   const [editingPost, setEditingPost] = useState(null);
   const [toast,       setToast]       = useState(null);
-  const [connected,   setConnected]   = useState(['instagram','facebook','twitter','linkedin','tiktok']);
+  const [connected,   setConnected]   = useState(() => {
+    try {
+      const s = localStorage.getItem('pp_connected');
+      return s ? JSON.parse(s) : ['instagram','facebook','twitter','linkedin','tiktok'];
+    } catch { return ['instagram','facebook','twitter','linkedin','tiktok']; }
+  });
   const [syncing,     setSyncing]     = useState(false);
   const [showUser,    setShowUser]    = useState(false);
 
@@ -473,7 +478,10 @@ function MainApp({ onSignOut }) {
   const loadPosts = useCallback(async () => {
     setSyncing(true);
     try {
-      const d = await supabase.query('posts', { order: 'scheduled_date.asc' });
+      const d = await supabase.query('posts', {
+        filters: [['company_id', 'eq', activeCompanyId]],
+        order:   'scheduled_date.asc',
+      });
       setPosts(d.map(r => dbToPost(r, activeCompanyId)));
     } catch (e) {
       notify(`Cloud sync issue: ${e.message}`, 'error');
@@ -488,21 +496,22 @@ function MainApp({ onSignOut }) {
       return;
     }
     loadPosts();
-    // Polling picks up changes made by other users/sessions
+    // Polling picks up changes made by other users/sessions in this company
     const unsub = supabase.subscribeToTable('posts', incoming => {
       if (!incoming?.length) return;
+      const cid = activeCompanyIdRef.current;
+      // Only merge rows that belong to the currently-viewed company
+      const relevant = incoming.filter(r => r.company_id === cid);
+      if (!relevant.length) return;
       setPosts(prev => {
         const map = new Map(prev.map(p => [p.id, p]));
-        // Use ref so the callback always sees the current activeCompanyId even
-        // though the subscription closure was created once at mount.
-        incoming.forEach(r => map.set(r.id, dbToPost(r, activeCompanyIdRef.current)));
+        relevant.forEach(r => map.set(r.id, dbToPost(r, cid)));
         return Array.from(map.values())
           .sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
       });
     });
     return unsub;
-  }, [usingDemo]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Note: loadPosts intentionally omitted — only reload on usingDemo toggle
+  }, [usingDemo, loadPosts]); // reload when company changes (loadPosts recreated on activeCompanyId change)
 
   // ── CRUD ────────────────────────────────────────────────────
   const savePost = useCallback(async post => {
@@ -658,7 +667,7 @@ function MainApp({ onSignOut }) {
       )}
 
       <main className="main">
-        {tab === 'dashboard' && <Dashboard posts={companyPosts} onEdit={editPost} onNew={() => { setEditingPost(null); setActiveModal('composer'); }} connected={connected} />}
+        {tab === 'dashboard' && <Dashboard posts={companyPosts} onEdit={editPost} onNew={() => { setEditingPost(null); setActiveModal('composer'); }} onAI={() => setActiveModal('ai')} onBulk={() => setActiveModal('bulk')} connected={connected} />}
         {tab === 'calendar'  && <Calendar  posts={companyPosts} onEdit={editPost} onNew={d => { setEditingPost({ prefillDate: d }); setActiveModal('composer'); }} />}
         {tab === 'queue'     && <QueueView posts={companyPosts} onEdit={editPost} onNew={() => { setEditingPost(null); setActiveModal('composer'); }} />}
         {tab === 'posts'     && <PostsList posts={companyPosts} onEdit={editPost} onDelete={deletePost} />}
@@ -1044,7 +1053,7 @@ function CompanyForm({ company, onSave, onClose }) {
 // ─────────────────────────────────────────────────────────────
 // DASHBOARD
 // ─────────────────────────────────────────────────────────────
-function Dashboard({ posts, onEdit, onNew, connected }) {
+function Dashboard({ posts, onEdit, onNew, onAI, onBulk, connected }) {
   const { activeCompany } = useCompany();
   const pub    = posts.filter(p => p.status === 'published');
   const sched  = posts.filter(p => p.status === 'scheduled');
@@ -1125,8 +1134,8 @@ function Dashboard({ posts, onEdit, onNew, connected }) {
           <div className="actions-stack">
             <button className="action-btn" onClick={onNew}>📝 Create New Post</button>
             <button className="action-btn" onClick={onNew}>📸 Upload Media &amp; Post</button>
-            <button className="action-btn" onClick={onNew}>📦 Bulk Schedule</button>
-            <button className="action-btn" onClick={onNew}>🤖 AI Content Assistant</button>
+            <button className="action-btn" onClick={onBulk}>📦 Bulk Schedule</button>
+            <button className="action-btn" onClick={onAI}>🤖 AI Content Assistant</button>
           </div>
 
           <h3 className="card-title" style={{ marginTop: 18 }}>📊 Content Mix</h3>
@@ -1167,31 +1176,102 @@ function Calendar({ posts, onEdit, onNew }) {
     return () => clearTimeout(timer);
   }, [today]); // re-schedule after each daily tick
 
+  // ── Month view helpers ─────────────────────────────────────
   const daysInMonth = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).getDate();
   const firstDow    = new Date(cur.getFullYear(), cur.getMonth(), 1).getDay();
 
-  const postsOnDay = useCallback(day => posts.filter(p => {
+  const postsOnDay = useCallback((dateObj) => posts.filter(p => {
     const d = new Date(p.scheduledDate);
-    return d.getDate() === day && d.getMonth() === cur.getMonth() && d.getFullYear() === cur.getFullYear();
-  }), [posts, cur]);
+    return d.getFullYear() === dateObj.getFullYear() &&
+           d.getMonth()    === dateObj.getMonth()    &&
+           d.getDate()     === dateObj.getDate();
+  }), [posts]);
 
-  const isToday = day =>
-    today.getDate() === day && today.getMonth() === cur.getMonth() && today.getFullYear() === cur.getFullYear();
+  const isSameDay = (dateObj) =>
+    today.getFullYear() === dateObj.getFullYear() &&
+    today.getMonth()    === dateObj.getMonth()    &&
+    today.getDate()     === dateObj.getDate();
+
+  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+  const prevMonth = () => { const d = new Date(cur); d.setMonth(d.getMonth() - 1); setCur(d); };
+  const nextMonth = () => { const d = new Date(cur); d.setMonth(d.getMonth() + 1); if (d <= maxD) setCur(d); };
+
+  // ── Week view helpers ──────────────────────────────────────
+  // Find the Sunday that starts the week containing `cur`
+  const weekStart = useMemo(() => {
+    const d = new Date(cur);
+    d.setDate(d.getDate() - d.getDay());
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, [cur]);
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + i);
+    return d;
+  }), [weekStart]);
+  const prevWeek = () => { const d = new Date(cur); d.setDate(d.getDate() - 7); setCur(d); };
+  const nextWeek = () => { const d = new Date(cur); d.setDate(d.getDate() + 7); if (d <= maxD) setCur(d); };
+
+  const calTitle = view === 'week'
+    ? `${weekDays[0].toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${weekDays[6].toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+    : cur.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
   const cells = [];
   for (let i = 0; i < firstDow; i++) cells.push(null);
   for (let i = 1; i <= daysInMonth; i++) cells.push(i);
 
-  const prevMonth = () => { const d = new Date(cur); d.setMonth(d.getMonth() - 1); setCur(d); };
-  const nextMonth = () => { const d = new Date(cur); d.setMonth(d.getMonth() + 1); if (d <= maxD) setCur(d); };
+  const CalDayCell = ({ dateObj, maxPosts = 3 }) => {
+    const dp   = postsOnDay(dateObj);
+    const past = dateObj < todayMidnight;
+    return (
+      <div
+        className={`cal-cell ${isSameDay(dateObj) ? 'cal-today' : ''} ${past ? 'cal-past' : ''}`}
+        onClick={() => !past && onNew(dateObj.toISOString())}
+        role="gridcell"
+        aria-label={`${dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}${dp.length ? `, ${dp.length} post${dp.length !== 1 ? 's' : ''}` : ''}`}
+        tabIndex={past ? -1 : 0}
+        onKeyDown={e => e.key === 'Enter' && !past && onNew(dateObj.toISOString())}
+      >
+        <span className={`cal-num ${isSameDay(dateObj) ? 'cal-num-today' : ''}`}>{dateObj.getDate()}</span>
+        <div className="cal-posts">
+          {dp.slice(0, maxPosts).map(post => (
+            <div
+              key={post.id}
+              className="cal-dot"
+              style={{ background: post.status === 'published' ? '#059669' : post.status === 'scheduled' ? '#1D4ED8' : '#B45309' }}
+              onClick={e => { e.stopPropagation(); onEdit(post); }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={e => e.key === 'Enter' && onEdit(post)}
+              aria-label={`Edit post: ${post.content.substring(0, 40)}`}
+            >
+              {post.platforms.slice(0, 2).map(pid => PLATFORMS.find(x => x.id === pid)?.icon).join('')}
+              <span className="cal-dot-time">{fmtTime(post.scheduledDate)}</span>
+            </div>
+          ))}
+          {dp.length > maxPosts && <span className="cal-more">+{dp.length - maxPosts}</span>}
+        </div>
+      </div>
+    );
+  };
+
+  const legend = (
+    <div className="cal-legend" aria-label="Calendar legend">
+      <span className="legend"><span className="ldot" style={{ background: '#059669' }} aria-hidden="true" /> Published</span>
+      <span className="legend"><span className="ldot" style={{ background: '#1D4ED8' }} aria-hidden="true" /> Scheduled</span>
+      <span className="legend"><span className="ldot" style={{ background: '#B45309' }} aria-hidden="true" /> Draft</span>
+      <span className="legend-hint">Click any future day to schedule</span>
+    </div>
+  );
 
   return (
     <div>
       <div className="cal-controls">
         <div className="cal-nav">
-          <button className="cal-arrow" onClick={prevMonth} aria-label="Previous month">‹</button>
-          <h2 className="cal-month">{cur.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</h2>
-          <button className="cal-arrow" onClick={nextMonth} aria-label="Next month">›</button>
+          <button className="cal-arrow" onClick={view === 'week' ? prevWeek : prevMonth} aria-label={`Previous ${view}`}>‹</button>
+          <h2 className="cal-month">{calTitle}</h2>
+          <button className="cal-arrow" onClick={view === 'week' ? nextWeek : nextMonth} aria-label={`Next ${view}`}>›</button>
         </div>
         <div className="cal-right">
           <span className="cal-range-badge">📅 6-month window</span>
@@ -1203,52 +1283,26 @@ function Calendar({ posts, onEdit, onNew }) {
         </div>
       </div>
 
-      <div className="cal-grid" role="grid" aria-label="Calendar">
-        {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <div key={d} className="cal-hdr" role="columnheader">{d}</div>)}
-        {cells.map((day, idx) => {
-          if (day === null) return <div key={`e-${idx}`} className="cal-empty" aria-hidden="true" />;
-          const dp      = postsOnDay(day);
-          const dateObj = new Date(cur.getFullYear(), cur.getMonth(), day);
-          const past    = dateObj < new Date(today.getFullYear(), today.getMonth(), today.getDate());
-          return (
-            <div
-              key={day}
-              className={`cal-cell ${isToday(day) ? 'cal-today' : ''} ${past ? 'cal-past' : ''}`}
-              onClick={() => !past && onNew(dateObj.toISOString())}
-              role="gridcell"
-              aria-label={`${dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}${dp.length ? `, ${dp.length} post${dp.length !== 1 ? 's' : ''}` : ''}`}
-              tabIndex={past ? -1 : 0}
-              onKeyDown={e => e.key === 'Enter' && !past && onNew(dateObj.toISOString())}
-            >
-              <span className={`cal-num ${isToday(day) ? 'cal-num-today' : ''}`}>{day}</span>
-              <div className="cal-posts">
-                {dp.slice(0, 3).map(post => (
-                  <div
-                    key={post.id}
-                    className="cal-dot"
-                    style={{ background: post.status === 'published' ? '#059669' : post.status === 'scheduled' ? '#1D4ED8' : '#B45309' }}
-                    onClick={e => { e.stopPropagation(); onEdit(post); }}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={e => e.key === 'Enter' && onEdit(post)}
-                    aria-label={`Edit post: ${post.content.substring(0, 40)}`}
-                  >
-                    {post.platforms.slice(0, 2).map(pid => PLATFORMS.find(x => x.id === pid)?.icon).join('')}
-                    <span className="cal-dot-time">{fmtTime(post.scheduledDate)}</span>
-                  </div>
-                ))}
-                {dp.length > 3 && <span className="cal-more">+{dp.length - 3}</span>}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="cal-legend" aria-label="Calendar legend">
-        <span className="legend"><span className="ldot" style={{ background: '#059669' }} aria-hidden="true" /> Published</span>
-        <span className="legend"><span className="ldot" style={{ background: '#1D4ED8' }} aria-hidden="true" /> Scheduled</span>
-        <span className="legend"><span className="ldot" style={{ background: '#B45309' }} aria-hidden="true" /> Draft</span>
-        <span className="legend-hint">Click any future day to schedule</span>
-      </div>
+      {view === 'week' ? (
+        <>
+          <div className="cal-grid" role="grid" aria-label="Week calendar">
+            {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <div key={d} className="cal-hdr" role="columnheader">{d}</div>)}
+            {weekDays.map((dateObj, i) => <CalDayCell key={i} dateObj={dateObj} maxPosts={8} />)}
+          </div>
+          {legend}
+        </>
+      ) : (
+        <>
+          <div className="cal-grid" role="grid" aria-label="Calendar">
+            {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <div key={d} className="cal-hdr" role="columnheader">{d}</div>)}
+            {cells.map((day, idx) => {
+              if (day === null) return <div key={`e-${idx}`} className="cal-empty" aria-hidden="true" />;
+              return <CalDayCell key={day} dateObj={new Date(cur.getFullYear(), cur.getMonth(), day)} />;
+            })}
+          </div>
+          {legend}
+        </>
+      )}
     </div>
   );
 }
@@ -1589,8 +1643,8 @@ function Composer({ post, connected, onSave, onClose, companyId }) {
   const [hashtags,   setHashtags]   = useState(isEdit ? (post.hashtags || []).join(' ') : '');
   const [activeHash, setActiveHash] = useState('');
   const [category,   setCategory]   = useState(isEdit ? (post.category || '') : '');
-  const [perNetwork, setPerNetwork] = useState({});
-  const [showPerNet, setShowPerNet] = useState(false);
+  const [perNetwork, setPerNetwork] = useState(isEdit ? (post.perNetwork || {}) : {});
+  const [showPerNet, setShowPerNet] = useState(isEdit && Object.keys(post.perNetwork || {}).length > 0);
   const [contentErr, setContentErr] = useState('');
 
   const maxDate   = useMemo(() => { const d = new Date(); d.setMonth(d.getMonth() + 6); return d.toISOString().slice(0, 16); }, []);
