@@ -446,7 +446,8 @@ function MainApp({ onSignOut }) {
   }, []);
 
   // ── Stale-proof refs ───────────────────────────────────────────
-  const postsRef = useRef(posts);
+  const postsRef    = useRef(posts);
+  const savingRef   = useRef(false); // prevents concurrent duplicate save calls
   useEffect(() => { postsRef.current = posts; }, [posts]);
 
   // ── Company visibility ──────────────────────────────────────
@@ -484,7 +485,7 @@ function MainApp({ onSignOut }) {
 
   useEffect(() => {
     if (usingDemo || !supabase.configured) {
-      setPosts(makeDemoPosts());
+      setPosts(DEMO_POSTS);
       return;
     }
     loadPosts();
@@ -506,6 +507,8 @@ function MainApp({ onSignOut }) {
 
   // ── CRUD ────────────────────────────────────────────────────
   const savePost = useCallback(async post => {
+    if (savingRef.current) return; // prevent concurrent saves
+    savingRef.current = true;
     // Use postsRef to avoid stale closure — gets current posts without re-creating callback
     const exists = postsRef.current.some(p => p.id === post.id);
     setPosts(prev => {
@@ -527,7 +530,11 @@ function MainApp({ onSignOut }) {
         notify(`Cloud sync failed: ${e.message}. Reloading…`, 'error');
         // Revert optimistic update
         loadPosts();
+      } finally {
+        savingRef.current = false;
       }
+    } else {
+      savingRef.current = false;
     }
   }, [usingDemo, user, notify, activeCompanyId]);
 
@@ -1155,6 +1162,54 @@ function Dashboard({ posts, onEdit, onNew, onAI, onBulk, connected }) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// CALENDAR DAY CELL  (top-level so React keeps a stable type identity)
+// ─────────────────────────────────────────────────────────────
+function CalDayCell({ dateObj, maxPosts = 3, posts, todayMidnight, onNew, onEdit }) {
+  const dp   = posts.filter(p => {
+    const d = new Date(p.scheduledDate);
+    return d.getFullYear() === dateObj.getFullYear() &&
+           d.getMonth()    === dateObj.getMonth()    &&
+           d.getDate()     === dateObj.getDate();
+  });
+  const today = new Date();
+  const isToday =
+    today.getFullYear() === dateObj.getFullYear() &&
+    today.getMonth()    === dateObj.getMonth()    &&
+    today.getDate()     === dateObj.getDate();
+  const past = dateObj < todayMidnight;
+  return (
+    <div
+      className={`cal-cell ${isToday ? 'cal-today' : ''} ${past ? 'cal-past' : ''}`}
+      onClick={() => !past && onNew(dateObj.toISOString())}
+      role="gridcell"
+      aria-label={`${dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}${dp.length ? `, ${dp.length} post${dp.length !== 1 ? 's' : ''}` : ''}`}
+      tabIndex={past ? -1 : 0}
+      onKeyDown={e => e.key === 'Enter' && !past && onNew(dateObj.toISOString())}
+    >
+      <span className={`cal-num ${isToday ? 'cal-num-today' : ''}`}>{dateObj.getDate()}</span>
+      <div className="cal-posts">
+        {dp.slice(0, maxPosts).map(post => (
+          <div
+            key={post.id}
+            className="cal-dot"
+            style={{ background: post.status === 'published' ? '#059669' : post.status === 'scheduled' ? '#1D4ED8' : '#B45309' }}
+            onClick={e => { e.stopPropagation(); onEdit(post); }}
+            role="button"
+            tabIndex={0}
+            onKeyDown={e => e.key === 'Enter' && onEdit(post)}
+            aria-label={`Edit post: ${post.content.substring(0, 40)}`}
+          >
+            {post.platforms.slice(0, 2).map(pid => PLATFORMS.find(x => x.id === pid)?.icon).join('')}
+            <span className="cal-dot-time">{fmtTime(post.scheduledDate)}</span>
+          </div>
+        ))}
+        {dp.length > maxPosts && <span className="cal-more">+{dp.length - maxPosts}</span>}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // CALENDAR
 // ─────────────────────────────────────────────────────────────
 function Calendar({ posts, onEdit, onNew }) {
@@ -1173,18 +1228,6 @@ function Calendar({ posts, onEdit, onNew }) {
   // ── Month view helpers ─────────────────────────────────────
   const daysInMonth = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).getDate();
   const firstDow    = new Date(cur.getFullYear(), cur.getMonth(), 1).getDay();
-
-  const postsOnDay = useCallback((dateObj) => posts.filter(p => {
-    const d = new Date(p.scheduledDate);
-    return d.getFullYear() === dateObj.getFullYear() &&
-           d.getMonth()    === dateObj.getMonth()    &&
-           d.getDate()     === dateObj.getDate();
-  }), [posts]);
-
-  const isSameDay = (dateObj) =>
-    today.getFullYear() === dateObj.getFullYear() &&
-    today.getMonth()    === dateObj.getMonth()    &&
-    today.getDate()     === dateObj.getDate();
 
   const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
@@ -1215,40 +1258,9 @@ function Calendar({ posts, onEdit, onNew }) {
   for (let i = 0; i < firstDow; i++) cells.push(null);
   for (let i = 1; i <= daysInMonth; i++) cells.push(i);
 
-  const CalDayCell = ({ dateObj, maxPosts = 3 }) => {
-    const dp   = postsOnDay(dateObj);
-    const past = dateObj < todayMidnight;
-    return (
-      <div
-        className={`cal-cell ${isSameDay(dateObj) ? 'cal-today' : ''} ${past ? 'cal-past' : ''}`}
-        onClick={() => !past && onNew(dateObj.toISOString())}
-        role="gridcell"
-        aria-label={`${dateObj.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}${dp.length ? `, ${dp.length} post${dp.length !== 1 ? 's' : ''}` : ''}`}
-        tabIndex={past ? -1 : 0}
-        onKeyDown={e => e.key === 'Enter' && !past && onNew(dateObj.toISOString())}
-      >
-        <span className={`cal-num ${isSameDay(dateObj) ? 'cal-num-today' : ''}`}>{dateObj.getDate()}</span>
-        <div className="cal-posts">
-          {dp.slice(0, maxPosts).map(post => (
-            <div
-              key={post.id}
-              className="cal-dot"
-              style={{ background: post.status === 'published' ? '#059669' : post.status === 'scheduled' ? '#1D4ED8' : '#B45309' }}
-              onClick={e => { e.stopPropagation(); onEdit(post); }}
-              role="button"
-              tabIndex={0}
-              onKeyDown={e => e.key === 'Enter' && onEdit(post)}
-              aria-label={`Edit post: ${post.content.substring(0, 40)}`}
-            >
-              {post.platforms.slice(0, 2).map(pid => PLATFORMS.find(x => x.id === pid)?.icon).join('')}
-              <span className="cal-dot-time">{fmtTime(post.scheduledDate)}</span>
-            </div>
-          ))}
-          {dp.length > maxPosts && <span className="cal-more">+{dp.length - maxPosts}</span>}
-        </div>
-      </div>
-    );
-  };
+  // CalDayCell is defined outside Calendar (see below) to keep a stable
+  // component identity across renders; defining it inside would cause React to
+  // unmount/remount every cell on every state change (today-tick, view switch, etc.).
 
   const legend = (
     <div className="cal-legend" aria-label="Calendar legend">
@@ -1281,7 +1293,7 @@ function Calendar({ posts, onEdit, onNew }) {
         <>
           <div className="cal-grid" role="grid" aria-label="Week calendar">
             {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <div key={d} className="cal-hdr" role="columnheader">{d}</div>)}
-            {weekDays.map((dateObj, i) => <CalDayCell key={i} dateObj={dateObj} maxPosts={8} />)}
+            {weekDays.map((dateObj, i) => <CalDayCell key={i} dateObj={dateObj} maxPosts={8} posts={posts} todayMidnight={todayMidnight} onNew={onNew} onEdit={onEdit} />)}
           </div>
           {legend}
         </>
@@ -1291,7 +1303,7 @@ function Calendar({ posts, onEdit, onNew }) {
             {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <div key={d} className="cal-hdr" role="columnheader">{d}</div>)}
             {cells.map((day, idx) => {
               if (day === null) return <div key={`e-${idx}`} className="cal-empty" aria-hidden="true" />;
-              return <CalDayCell key={day} dateObj={new Date(cur.getFullYear(), cur.getMonth(), day)} />;
+              return <CalDayCell key={day} dateObj={new Date(cur.getFullYear(), cur.getMonth(), day)} posts={posts} todayMidnight={todayMidnight} onNew={onNew} onEdit={onEdit} />;
             })}
           </div>
           {legend}
@@ -1670,6 +1682,10 @@ function Composer({ post, connected, onSave, onClose, companyId }) {
     if (!draft && scheduledTime <= new Date()) { setContentErr('Scheduled time must be in the future'); return; }
     setContentErr('');
     const full = hashtags.trim() ? `${trimmed}\n\n${hashtags.trim()}` : trimmed;
+    // Strip per-network entries for platforms that are no longer selected
+    const cleanedPerNetwork = Object.fromEntries(
+      Object.entries(perNetwork).filter(([pid]) => plats.includes(pid))
+    );
     onSave({
       id:            isEdit ? post.id : generateId(),
       content:       full,
@@ -1680,7 +1696,7 @@ function Composer({ post, connected, onSave, onClose, companyId }) {
       hashtags:      hashtags.trim().split(/\s+/).filter(Boolean),
       engagement:    isEdit ? post.engagement : null,
       category,
-      perNetwork,
+      perNetwork:    cleanedPerNetwork,
       mediaUrls:     [],
       companyId:     effectiveCompanyId,
     });
@@ -1911,10 +1927,13 @@ function AIAssistant({ onClose, onInsert }) {
     { label: '🤔 Question',       prompt: 'Write an engaging question post to boost audience interaction' },
   ];
 
+  const AI_TIMEOUT_MS = 30_000; // 30s — Vercel function max is 30s
+
   const generate = async () => {
     if (!prompt.trim()) return;
     setLoading(true); setResult(''); setAiError('');
     abortRef.current = new AbortController();
+    const timer = setTimeout(() => abortRef.current?.abort(), AI_TIMEOUT_MS);
     try {
       const p = PLATFORMS.find(x => x.id === platform);
       // Route through the /api/generate serverless proxy so the Anthropic API
@@ -1938,13 +1957,17 @@ function AIAssistant({ onClose, onInsert }) {
       if (!data.text) throw new Error('Empty response from AI');
       setResult(data.text);
     } catch (e) {
-      if (e.name === 'AbortError') return; // user navigated away
+      if (e.name === 'AbortError') {
+        setAiError('Request timed out. Please try again.');
+        return;
+      }
       setAiError(
         e.message.includes('not configured')
           ? 'AI service not configured. Add ANTHROPIC_API_KEY to your Vercel environment variables.'
           : `Generation failed: ${e.message}`
       );
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   };
@@ -2053,7 +2076,9 @@ function BulkUpload({ onClose, onImport, connected }) {
         const row  = {};
         headers.forEach((h, j) => { row[h] = vals[j] !== undefined ? vals[j] : ''; });
 
-        if (!row.content?.trim()) { skipped.push(i + 1); continue; }
+        const trimmedContent = row.content?.trim() || '';
+        if (!trimmedContent) { skipped.push(i + 1); continue; }
+        if (trimmedContent.length > 40000) { skipped.push(i + 1); continue; } // safety cap
 
         const platIds = (row.platforms || '')
           .split('|')
@@ -2069,13 +2094,14 @@ function BulkUpload({ onClose, onImport, connected }) {
         // Reject dates in the past
         if (scheduled < new Date()) { skipped.push(i + 1); continue; }
 
+        const safePostType = POST_TYPES.includes(row.type) ? row.type : 'Post';
         posts.push({
           id:            generateId(),
-          content:       row.content.trim(),
+          content:       trimmedContent,
           platforms:     platIds.length > 0 ? platIds : [connected[0] || 'instagram'],
           scheduledDate: scheduled.toISOString(),
           status:        'scheduled',
-          postType:      row.type || 'Post',
+          postType:      safePostType,
           hashtags:      [],
           engagement:    null,
           category:      '',
@@ -2192,9 +2218,14 @@ function makeDemoPosts() {
         shares:      Math.floor(Math.random() * 60),
         impressions: Math.floor(Math.random() * 8000) + 500,
       } : null,
-      category:  cats[Math.floor(Math.random() * cats.length)],
-      mediaUrls: [],
-      companyId: coIds[i % coIds.length],
+      category:   cats[Math.floor(Math.random() * cats.length)],
+      mediaUrls:  [],
+      perNetwork: {},
+      companyId:  coIds[i % coIds.length],
     };
   }).sort((a, b) => new Date(a.scheduledDate) - new Date(b.scheduledDate));
 }
+
+// Stable demo posts — computed once per module load, not on every render.
+// Prevents all list keys from changing when usingDemo triggers a re-run.
+const DEMO_POSTS = makeDemoPosts();

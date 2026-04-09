@@ -24,8 +24,14 @@ export function initCSPReporting() {
 export function sanitizeHTML(dirty) {
   return DOMPurify.sanitize(dirty, {
     ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'a'],
-    ALLOWED_ATTR: ['href', 'target'],
+    // Explicitly forbid javascript: hrefs and allow only safe target values
+    ALLOWED_ATTR: ['href', 'target', 'rel'],
     ALLOW_DATA_ATTR: false,
+    FORCE_BODY: true,
+    FORBID_ATTR: ['style', 'class'],
+    // Hook: enforce safe attributes on <a> tags
+    ADD_ATTR: ['rel'],
+    HOOK_EVENT: 'afterSanitizeAttributes',
   });
 }
 

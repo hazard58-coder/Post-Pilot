@@ -64,8 +64,12 @@ export const generateId = () =>
         return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
       });
 
-export const fmt = (d) =>
-  new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+export const fmt = (d) => {
+  const date = new Date(d);
+  return isNaN(date.getTime()) ? '—' : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
 
-export const fmtTime = (d) =>
-  new Date(d).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+export const fmtTime = (d) => {
+  const date = new Date(d);
+  return isNaN(date.getTime()) ? '—' : date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+};

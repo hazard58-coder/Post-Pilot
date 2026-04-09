@@ -10,10 +10,30 @@
 //   ANTHROPIC_API_KEY = sk-ant-...
 // ─────────────────────────────────────────────────────────────
 
-const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_API  = 'https://api.anthropic.com/v1/messages';
 const MAX_PROMPT_LEN = 1000; // prevent prompt-injection abuse via oversized inputs
 
+// Allowed origins — add your production domain here
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+
 export default async function handler(req, res) {
+  // Validate origin to prevent cross-site abuse
+  const origin = req.headers.origin || '';
+  if (ALLOWED_ORIGINS.length > 0 && origin && !ALLOWED_ORIGINS.includes(origin)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'POST');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  }
+
+  // Preflight
+  if (req.method === 'OPTIONS') return res.status(204).end();
+
   // Only POST is accepted
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -38,11 +58,12 @@ export default async function handler(req, res) {
   const safePlatform = String(platform || 'Social Media').slice(0, 50);
   const safeMaxChars = Math.min(Number(maxChars) || 2200, 40000);
 
+  // System prompt defines role and rules — does NOT include user input.
+  // User prompt contains the topic so injection cannot override system instructions.
   const systemPrompt = [
     `You are a social media content expert.`,
     `Write a ${safeTone} post for ${safePlatform}.`,
-    `Character limit: ${safeMaxChars}.`,
-    `Topic: ${prompt.trim()}`,
+    `Character limit: ${safeMaxChars} characters.`,
     `Rules: write ONLY the post text (no commentary), include relevant emojis,`,
     `include a call to action, add 3–5 hashtags at the end, stay within the character limit.`,
   ].join(' ');
@@ -58,7 +79,8 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model:      'claude-sonnet-4-6',
         max_tokens: 1024,
-        messages:   [{ role: 'user', content: systemPrompt }],
+        system:     systemPrompt,
+        messages:   [{ role: 'user', content: `Topic: ${prompt.trim()}` }],
       }),
     });
 
