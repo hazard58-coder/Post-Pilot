@@ -114,8 +114,15 @@ class SupabaseClient {
       body: JSON.stringify({ email, password }),
     });
     const data = await res.json();
+    if (res.status === 429) {
+      throw new Error('Too many login attempts. Please try again later.');
+    }
     if (!res.ok || data.error || data.error_description) {
-      throw new Error(data.error_description || data.error || 'Sign in failed');
+      // Use a generic message for 400 to prevent user enumeration
+      throw new Error(
+        res.status === 400 ? 'Invalid email or password'
+          : data.error_description || data.error || 'Sign in failed'
+      );
     }
     this._setSession(data);
     return { user: data.user };

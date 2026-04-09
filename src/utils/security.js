@@ -21,17 +21,30 @@ export function initCSPReporting() {
 }
 
 // Sanitize HTML content
+// Enforces rel="noopener noreferrer" on all <a target="_blank"> links to
+// prevent tab-napping attacks. Uses DOMPurify.addHook() — the correct API
+// for post-sanitize attribute manipulation (HOOK_EVENT/ADD_ATTR are not
+// valid DOMPurify config options and were silently ignored before).
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'A') {
+    if (node.getAttribute('target') === '_blank') {
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+    // Strip javascript: hrefs that DOMPurify may have missed
+    const href = node.getAttribute('href') || '';
+    if (/^javascript:/i.test(href.trim())) {
+      node.removeAttribute('href');
+    }
+  }
+});
+
 export function sanitizeHTML(dirty) {
   return DOMPurify.sanitize(dirty, {
     ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'u', 'a'],
-    // Explicitly forbid javascript: hrefs and allow only safe target values
     ALLOWED_ATTR: ['href', 'target', 'rel'],
     ALLOW_DATA_ATTR: false,
     FORCE_BODY: true,
     FORBID_ATTR: ['style', 'class'],
-    // Hook: enforce safe attributes on <a> tags
-    ADD_ATTR: ['rel'],
-    HOOK_EVENT: 'afterSanitizeAttributes',
   });
 }
 

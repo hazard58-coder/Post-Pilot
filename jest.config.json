@@ -6,7 +6,6 @@
   },
   "moduleNameMapper": {
     "\\.(css|less|scss|sass)$": "<rootDir>/__mocks__/styleMock.js",
-    "^.*[/\\\\]supabase(\\.js)?$": "<rootDir>/__mocks__/supabaseMock.js",
-    "^.*[/\\\\]supabase-improved(\\.js)?$": "<rootDir>/__mocks__/supabaseMock.js"
+    "^.*[/\\\\]supabase(\\.js)?$": "<rootDir>/__mocks__/supabaseMock.js"
   }
 }
