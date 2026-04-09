@@ -1,0 +1,35 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`Snapshots Error object structure 1`] = `
+{
+  "code": 0,
+  "message": "Failed to fetch",
+  "retryable": true,
+  "timestamp": 1000000000000,
+  "type": "NetworkError",
+}
+`;
+
+exports[`Snapshots Post object structure matches schema 1`] = `
+{
+  "companyId": "company-1",
+  "content": "Hello world",
+  "engagement": {},
+  "hashtags": [
+    "#trending",
+  ],
+  "id": "uuid-1234",
+  "mediaUrls": [],
+  "perNetwork": {
+    "twitter": {
+      "text": "Alternative",
+    },
+  },
+  "platforms": [
+    "twitter",
+    "instagram",
+  ],
+  "scheduledDate": "2026-05-15T10:00",
+  "status": "scheduled",
+}
+`;

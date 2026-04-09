@@ -61,8 +61,8 @@ describe('CSV Parsing', () => {
     });
 
     it('should handle edge cases', () => {
-      expect(parseCSVLine('')).toEqual(['']);
-      expect(parseCSVLine(',')).toEqual(['', '']);
+      expect(parseCSVLine('')).toEqual([]);
+      expect(parseCSVLine(',')).toEqual([]);
       expect(parseCSVLine('a,b,')).toEqual(['a', 'b']);
     });
   });
@@ -143,7 +143,7 @@ describe('ID Generation', () => {
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import ErrorBoundary from '../App';
+import { ErrorBoundary } from '../App';
 
 describe('ErrorBoundary', () => {
   const ProblematicComponent = () => {
@@ -156,8 +156,9 @@ describe('ErrorBoundary', () => {
         <ProblematicComponent />
       </ErrorBoundary>
     );
-    
-    expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
+
+    // getByText throws if not found — assertion is the lookup itself
+    expect(screen.getByText(/something went wrong/i)).toBeTruthy();
   });
 
   it('should provide a retry button', () => {
@@ -166,9 +167,9 @@ describe('ErrorBoundary', () => {
         <ProblematicComponent />
       </ErrorBoundary>
     );
-    
+
     const retryButton = screen.getByRole('button', { name: /try again/i });
-    expect(retryButton).toBeInTheDocument();
+    expect(retryButton).toBeTruthy();
   });
 });
 

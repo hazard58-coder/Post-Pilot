@@ -227,7 +227,8 @@ export const parseCSVPosts = (csvText, companyId) => {
  * Handles multiple formats: YYYY-MM-DD, MM/DD/YYYY, etc.
  */
 export const parseScheduleDate = (dateStr, timeStr) => {
-  if (!dateStr || !timeStr) return null;
+  if (!dateStr) return null;
+  const resolvedTime = timeStr || '09:00';
   
   try {
     // Try parsing as ISO date first
@@ -235,16 +236,14 @@ export const parseScheduleDate = (dateStr, timeStr) => {
     
     if (dateStr.includes('-')) {
       // YYYY-MM-DD format
-      date = new Date(`${dateStr}T${timeStr || '09:00'}:00`);
+      date = new Date(`${dateStr}T${resolvedTime}:00`);
     } else if (dateStr.includes('/')) {
       // MM/DD/YYYY format
       const [month, day, year] = dateStr.split('/');
       date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
       
-      if (timeStr) {
-        const [hours, minutes] = timeStr.split(':');
-        date.setHours(parseInt(hours) || 9, parseInt(minutes) || 0);
-      }
+      const [hours, minutes] = resolvedTime.split(':');
+      date.setHours(parseInt(hours) || 9, parseInt(minutes) || 0);
     } else {
       return null;
     }

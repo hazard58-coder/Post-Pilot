@@ -1,0 +1,12 @@
+{
+  "testEnvironment": "jsdom",
+  "setupFilesAfterFramework": ["<rootDir>/jest.setup.js"],
+  "transform": {
+    "^.+\\.[jt]sx?$": "babel-jest"
+  },
+  "moduleNameMapper": {
+    "\\.(css|less|scss|sass)$": "<rootDir>/__mocks__/styleMock.js",
+    "^.*[/\\\\]supabase(\\.js)?$": "<rootDir>/__mocks__/supabaseMock.js",
+    "^.*[/\\\\]supabase-improved(\\.js)?$": "<rootDir>/__mocks__/supabaseMock.js"
+  }
+}
