@@ -3,8 +3,8 @@
 // Handles Auth, DB (PostgREST), and session management
 // ─────────────────────────────────────────────────────────────
 
-const SUPABASE_URL      = window.__ENV__?.SUPABASE_URL      || '';
-const SUPABASE_ANON_KEY = window.__ENV__?.SUPABASE_ANON_KEY || '';
+const SUPABASE_URL      = import.meta.env.VITE_SUPABASE_URL      || '';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 const SESSION_KEY       = 'pp_session';
 const REQUEST_TIMEOUT_MS = 12_000;
 const MAX_RETRIES        = 2;
