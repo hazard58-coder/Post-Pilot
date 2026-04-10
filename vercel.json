@@ -62,6 +62,10 @@
     "api/generate.js": {
       "maxDuration": 30,
       "memory": 1024
+    },
+    "api/setup.js": {
+      "maxDuration": 30,
+      "memory": 1024
     }
   },
   "regions": ["iad1"],
