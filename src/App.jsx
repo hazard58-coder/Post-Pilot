@@ -14,16 +14,8 @@ const useAuth        = () => useContext(AuthContext);
 const CompanyContext = createContext(null);
 const useCompany     = () => useContext(CompanyContext);
 
-// ─────────────────────────────────────────────────────────────
-// ADMIN CREDENTIALS
-// ⚠ SECURITY: Remove this entire section for production.
-// Admin access should be handled server-side via Supabase service role.
-// ─────────────────────────────────────────────────────────────
-const ADMIN_USERNAME = window.__ENV__?.ADMIN_USERNAME || '';
-const ADMIN_PASSWORD = window.__ENV__?.ADMIN_PASSWORD || '';
-
 // Set VITE_DEMO_ENABLED=false in production to hide the "Try Demo" button.
-const DEMO_ENABLED   = window.__ENV__?.DEMO_ENABLED !== 'false';
+const DEMO_ENABLED = window.__ENV__?.DEMO_ENABLED !== 'false';
 
 // ─────────────────────────────────────────────────────────────
 // PURE HELPERS  (defined outside components — not re-created on render)
@@ -139,7 +131,6 @@ export default function PostPilotApp() {
   const [user,      setUser]      = useState(null);
   const [loading,   setLoading]   = useState(true);
   const [usingDemo, setUsingDemo] = useState(false);
-  const [isAdmin,   setIsAdmin]   = useState(false);
 
   // ── Company state (persisted to localStorage) ──────────────
   const [companies, setCompanies] = useState(() => {
@@ -169,7 +160,7 @@ export default function PostPilotApp() {
   useEffect(() => {
     const unsub = supabase.subscribe((ev, s) => {
       if (ev === 'SIGNED_IN')  setUser(s.user);
-      if (ev === 'SIGNED_OUT') { setUser(null); setUsingDemo(false); setIsAdmin(false); }
+      if (ev === 'SIGNED_OUT') { setUser(null); setUsingDemo(false); }
     });
 
     if (supabase.configured) {
@@ -219,15 +210,8 @@ export default function PostPilotApp() {
     setUser({ id: 'demo', email: 'demo@postpilot.app', user_metadata: { display_name: 'Demo User' } });
   }, []);
 
-  const enterAdmin = useCallback(() => {
-    // ⚠ SECURITY: Remove this function for production
-    // Admin access should be server-side only
-    setUsingDemo(true); setIsAdmin(true);
-    setUser({ id: 'admin', email: ADMIN_USERNAME, user_metadata: { display_name: 'Admin' } });
-  }, []);
-
   const handleSignOut = useCallback(() => {
-    if (usingDemo) { setUser(null); setUsingDemo(false); setIsAdmin(false); }
+    if (usingDemo) { setUser(null); setUsingDemo(false); }
     else supabase.signOut();
   }, [usingDemo]);
 
@@ -235,14 +219,14 @@ export default function PostPilotApp() {
 
   return (
     <ErrorBoundary>
-      <AuthContext.Provider value={{ user, usingDemo, isAdmin, supabase }}>
+      <AuthContext.Provider value={{ user, usingDemo, supabase }}>
         <CompanyContext.Provider value={{
           companies, activeCompanyId, activeCompany, setActiveCompanyId,
           userAssignments, setUserAssignments, addCompany, updateCompany, deleteCompany,
         }}>
           {user
             ? <MainApp onSignOut={handleSignOut} />
-            : <AuthScreen onDemo={enterDemo} onAdmin={enterAdmin} />
+            : <AuthScreen onDemo={enterDemo} />
           }
         </CompanyContext.Provider>
       </AuthContext.Provider>
@@ -266,7 +250,7 @@ function Loader() {
 // ─────────────────────────────────────────────────────────────
 // AUTH SCREEN
 // ─────────────────────────────────────────────────────────────
-function AuthScreen({ onDemo, onAdmin }) {
+function AuthScreen({ onDemo }) {
   const [mode,     setMode]     = useState('login');
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
@@ -289,17 +273,7 @@ function AuthScreen({ onDemo, onAdmin }) {
 
     if (!trimEmail) return setError('Email is required');
     if (mode !== 'reset' && !password) return setError('Password is required');
-
-    // Admin credential check — compare against build-time env vars
-    if (mode === 'login' && ADMIN_USERNAME && trimEmail === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-      onAdmin();
-      return;
-    }
-
-    // Validate email format for Supabase flows
-    if (mode !== 'login' || !ADMIN_USERNAME) {
-      if (!isValidEmail(trimEmail)) return setError('Enter a valid email address');
-    }
+    if (!isValidEmail(trimEmail)) return setError('Enter a valid email address');
 
     if (mode === 'signup' && password.length < 8) return setError('Password must be at least 8 characters');
     if (!supabase.configured) return setError('Supabase not configured. Try Demo Mode or set env vars.');
@@ -414,7 +388,7 @@ function AuthScreen({ onDemo, onAdmin }) {
 // MAIN APP
 // ─────────────────────────────────────────────────────────────
 function MainApp({ onSignOut }) {
-  const { user, usingDemo, isAdmin } = useAuth();
+  const { user, usingDemo } = useAuth();
   const { companies, activeCompanyId, userAssignments } = useCompany();
 
   const [tab,         setTab]         = useState('dashboard');
@@ -452,12 +426,11 @@ function MainApp({ onSignOut }) {
 
   // ── Company visibility ──────────────────────────────────────
   const userCompanies = useMemo(() => {
-    if (isAdmin) return companies;
     const assigned = userAssignments[user?.email];
     if (assigned === undefined) return companies;       // user not listed → sees all
     if (assigned.length === 0)  return [];              // explicitly restricted → sees none
     return companies.filter(c => assigned.includes(c.id));
-  }, [isAdmin, companies, userAssignments, user?.email]);
+  }, [companies, userAssignments, user?.email]);
 
   // Posts scoped to the active company — strict equality only.
   // The old `!p.companyId` bypass let posts with no/empty companyId leak into
@@ -594,7 +567,7 @@ function MainApp({ onSignOut }) {
     { id: 'posts',     label: 'Posts',     icon: '📝' },
     { id: 'analytics', label: 'Analytics', icon: '📈' },
     { id: 'platforms', label: 'Platforms', icon: '🔌' },
-    ...(isAdmin ? [{ id: 'admin', label: 'Admin', icon: '⚙️' }] : []),
+    ...(!usingDemo ? [{ id: 'admin', label: 'Admin', icon: '⚙️' }] : []),
   ];
 
   return (
@@ -610,7 +583,7 @@ function MainApp({ onSignOut }) {
           <div className="logo-mark" aria-hidden="true">P</div>
           <div className="logo-wrap">
             <h1 className="logo-text">PostPilot</h1>
-            <span className="sync-status">{usingDemo ? (isAdmin ? '⚙️ Admin' : 'Demo Mode') : syncing ? 'Syncing…' : '✅ Saved'}</span>
+            <span className="sync-status">{usingDemo ? 'Demo Mode' : syncing ? 'Syncing…' : '✅ Saved'}</span>
           </div>
           <CompanySwitcher userCompanies={userCompanies} />
         </div>
@@ -623,7 +596,7 @@ function MainApp({ onSignOut }) {
           </button>
           <div className="user-wrap">
             <button
-              className={`avatar-btn ${isAdmin ? 'avatar-admin' : ''}`}
+              className="avatar-btn"
               onClick={() => setShowUser(v => !v)}
               aria-label="User menu"
               aria-expanded={showUser}
@@ -635,10 +608,9 @@ function MainApp({ onSignOut }) {
                 <div className="dropdown-head">
                   <div className="dropdown-name">{dn}</div>
                   <div className="dropdown-email">{user.email}</div>
-                  {isAdmin && <div className="dropdown-admin-badge">⚙️ Administrator</div>}
                 </div>
                 <div className="dropdown-sep" />
-                {usingDemo && !isAdmin && <div className="dropdown-item dropdown-demo">💡 Demo — data not saved to cloud</div>}
+                {usingDemo && <div className="dropdown-item dropdown-demo">💡 Demo — data not saved to cloud</div>}
                 <button className="dropdown-item dropdown-signout" onClick={onSignOut} role="menuitem">Sign Out</button>
               </div>
             )}
@@ -660,7 +632,7 @@ function MainApp({ onSignOut }) {
         ))}
       </nav>
 
-      {usingDemo && !isAdmin && (
+      {usingDemo && (
         <div className="demo-banner" role="banner">
           👋 Demo Mode — <strong>sign up free</strong> to save posts to the cloud
           <button className="demo-cta" onClick={onSignOut}>Create Account →</button>
@@ -674,7 +646,7 @@ function MainApp({ onSignOut }) {
         {tab === 'posts'     && <PostsList posts={companyPosts} onEdit={editPost} onDelete={deletePost} />}
         {tab === 'analytics' && <Analytics posts={companyPosts} />}
         {tab === 'platforms' && <PlatformsView connected={connected} onToggle={toggleConnect} />}
-        {tab === 'admin'     && isAdmin && <AdminPanel />}
+        {tab === 'admin'     && !usingDemo && <AdminPanel />}
       </main>
 
       {activeModal === 'composer' && (
