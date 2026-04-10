@@ -42,6 +42,14 @@ const postToDb = (post, userId, companyId) => ({
   per_network:    post.perNetwork || {},
 });
 
+const dbToCompany = r => ({
+  id:       r.id,
+  name:     r.name,
+  industry: r.industry  || '',
+  color:    r.color     || '#3B82F6',
+  initials: r.initials  || '',
+});
+
 const dbToPost = (r, fallbackCompanyId) => ({
   id:            r.id,
   content:       r.content,
@@ -139,16 +147,14 @@ export default function PostPilotApp() {
   const [usingDemo, setUsingDemo] = useState(false);
   const [isOwner,   setIsOwner]   = useState(false);
 
-  // ── Company state (persisted to localStorage) ──────────────
-  const [companies, setCompanies] = useState(() => {
-    try {
-      const s = localStorage.getItem('pp_companies');
-      return s ? JSON.parse(s) : DEMO_COMPANIES.map(c => ({ ...c }));
-    } catch { return DEMO_COMPANIES.map(c => ({ ...c })); }
-  });
+  // ── Company state ──────────────────────────────────────────
+  // Real users: loaded from Supabase, empty until fetched.
+  // Demo users: DEMO_COMPANIES from constants (localStorage not needed).
+  const [companies,      setCompanies]      = useState([]);
+  const [companiesReady, setCompaniesReady] = useState(false);
 
   const [activeCompanyId, setActiveCompanyId] = useState(
-    () => localStorage.getItem('pp_active_co') || DEMO_COMPANIES[0]?.id || ''
+    () => localStorage.getItem('pp_active_co') || ''
   );
 
   const [userAssignments, setUserAssignments] = useState(() => {
@@ -158,8 +164,7 @@ export default function PostPilotApp() {
     } catch { return {}; }
   });
 
-  // Persist to localStorage on change
-  useEffect(() => { localStorage.setItem('pp_companies',        JSON.stringify(companies));      }, [companies]);
+  // Persist active company and user assignments to localStorage
   useEffect(() => { localStorage.setItem('pp_active_co',        activeCompanyId);                }, [activeCompanyId]);
   useEffect(() => { localStorage.setItem('pp_user_assignments', JSON.stringify(userAssignments));}, [userAssignments]);
 
@@ -182,21 +187,85 @@ export default function PostPilotApp() {
     return unsub;
   }, []);
 
-  // ── Company operations ─────────────────────────────────────
-  const addCompany = useCallback(co => setCompanies(prev => [...prev, co]), []);
+  // ── Load companies from Supabase ───────────────────────────
+  const loadCompanies = useCallback(async (currentUser, demo) => {
+    if (demo || !supabase.configured || !currentUser) {
+      setCompanies(DEMO_COMPANIES.map(c => ({ ...c })));
+      setCompaniesReady(true);
+      return;
+    }
+    try {
+      const rows = await supabase.query('companies', { order: 'created_at.asc' });
+      setCompanies(rows.map(dbToCompany));
+    } catch (e) {
+      console.warn('[Companies] Load failed:', e.message);
+      setCompanies([]);
+    } finally {
+      setCompaniesReady(true);
+    }
+  }, []);
 
-  const updateCompany = useCallback((id, data) =>
-    setCompanies(prev => prev.map(c => c.id === id ? { ...c, ...data } : c)), []);
+  // Load companies whenever the user session changes
+  useEffect(() => {
+    if (!loading) loadCompanies(user, usingDemo);
+  }, [user, usingDemo, loading, loadCompanies]);
 
-  const deleteCompany = useCallback(id => {
+  // If the saved activeCompanyId isn't in the loaded list, reset to first
+  useEffect(() => {
+    if (!companiesReady || companies.length === 0) return;
+    if (!companies.find(c => c.id === activeCompanyId)) {
+      setActiveCompanyId(companies[0].id);
+    }
+  }, [companies, companiesReady, activeCompanyId]);
+
+  // ── Company operations (DB-backed for real users) ──────────
+  const addCompany = useCallback(async co => {
+    if (usingDemo || !supabase.configured) {
+      setCompanies(prev => [...prev, { ...co, id: generateId() }]);
+      return;
+    }
+    try {
+      const rows = await supabase.insert('companies', [{
+        name:     co.name,
+        industry: co.industry || '',
+        color:    co.color    || '#3B82F6',
+        initials: co.initials || '',
+        owner_id: user.id,
+      }]);
+      const saved = Array.isArray(rows) ? rows[0] : rows;
+      setCompanies(prev => [...prev, dbToCompany(saved)]);
+    } catch (e) {
+      console.error('[Companies] Add failed:', e.message);
+      throw e; // let AdminPanel surface the error
+    }
+  }, [usingDemo, user]);
+
+  const updateCompany = useCallback(async (id, data) => {
+    // Optimistic update
+    setCompanies(prev => prev.map(c => c.id === id ? { ...c, ...data } : c));
+    if (usingDemo || !supabase.configured) return;
+    try {
+      await supabase.update('companies', id, {
+        name:     data.name,
+        industry: data.industry || '',
+        color:    data.color    || '#3B82F6',
+        initials: data.initials || '',
+      });
+    } catch (e) {
+      console.error('[Companies] Update failed:', e.message);
+      await loadCompanies(user, usingDemo); // roll back on failure
+      throw e;
+    }
+  }, [usingDemo, user, loadCompanies]);
+
+  const deleteCompany = useCallback(async id => {
+    // Optimistic update
     setCompanies(prev => prev.filter(c => c.id !== id));
     setActiveCompanyId(current => {
       if (current !== id) return current;
       const remaining = companies.filter(c => c.id !== id);
       return remaining.length > 0 ? remaining[0].id : current;
     });
-    // Remove the deleted company from every user's assignment list so stale
-    // IDs don't accumulate in localStorage and confuse the access-control logic.
     setUserAssignments(prev => {
       const next = {};
       for (const [email, coIds] of Object.entries(prev)) {
@@ -204,7 +273,15 @@ export default function PostPilotApp() {
       }
       return next;
     });
-  }, [companies]);
+    if (usingDemo || !supabase.configured) return;
+    try {
+      await supabase.delete('companies', id);
+    } catch (e) {
+      console.error('[Companies] Delete failed:', e.message);
+      await loadCompanies(user, usingDemo); // roll back on failure
+      throw e;
+    }
+  }, [usingDemo, user, companies, loadCompanies]);
 
   const activeCompany = useMemo(
     () => companies.find(c => c.id === activeCompanyId) || companies[0] || null,
@@ -836,12 +913,21 @@ function AdminPanel() {
   const [editCo,       setEditCo]       = useState(null);
   const [newUserEmail, setNewUserEmail] = useState('');
   const [emailError,   setEmailError]   = useState('');
-  const [confirm,      setConfirm]      = useState(null); // { message, onConfirm }
+  const [confirm,      setConfirm]      = useState(null);
+  const [saving,       setSaving]       = useState(false);
+  const [saveError,    setSaveError]    = useState('');
 
-  const handleSaveCompany = co => {
-    if (editCo) updateCompany(co.id, co);
-    else        addCompany(co);
-    setShowForm(false); setEditCo(null);
+  const handleSaveCompany = async co => {
+    setSaving(true); setSaveError('');
+    try {
+      if (editCo) await updateCompany(co.id, co);
+      else        await addCompany(co);
+      setShowForm(false); setEditCo(null);
+    } catch (e) {
+      setSaveError(e.message || 'Save failed. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const addUser = () => {
@@ -887,9 +973,10 @@ function AdminPanel() {
       {/* ── Companies Tab ── */}
       {adminTab === 'companies' && (
         <div>
+          {saveError && <div className="alert alert-error" role="alert" style={{ marginBottom: 12 }}>{saveError}</div>}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
-            <button className="btn-new" onClick={() => { setEditCo(null); setShowForm(true); }}>
-              <span className="btn-new-plus">+</span> Add Company
+            <button className="btn-new" disabled={saving} onClick={() => { setEditCo(null); setShowForm(true); setSaveError(''); }}>
+              <span className="btn-new-plus">+</span> {saving ? 'Saving…' : 'Add Company'}
             </button>
           </div>
           <div className="company-grid">
@@ -1026,7 +1113,7 @@ function CompanyForm({ company, onSave, onClose }) {
     const trimmed = name.trim();
     if (!trimmed) { setNameError('Company name is required'); return; }
     if (trimmed.length > 80) { setNameError('Company name must be 80 characters or fewer'); return; }
-    onSave({ id: company?.id || generateId(), name: trimmed, industry: industry.trim().slice(0, 80), color, initials: preview });
+    onSave({ ...(company?.id ? { id: company.id } : {}), name: trimmed, industry: industry.trim().slice(0, 80), color, initials: preview });
   };
 
   return (
