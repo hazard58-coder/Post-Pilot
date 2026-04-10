@@ -17,6 +17,12 @@ const useCompany     = () => useContext(CompanyContext);
 // Set VITE_DEMO_ENABLED=false in production to hide the "Try Demo" button.
 const DEMO_ENABLED = window.__ENV__?.DEMO_ENABLED !== 'false';
 
+// First-access owner password. Set VITE_OWNER_PASS in Vercel env vars to enable
+// a private "Owner Access" button on the login screen. This lets you get into the
+// app before Supabase is configured so you can set things up. Remove the env var
+// once you've created your real Supabase account.
+const OWNER_PASS = window.__ENV__?.OWNER_PASS || '';
+
 // ─────────────────────────────────────────────────────────────
 // PURE HELPERS  (defined outside components — not re-created on render)
 // ─────────────────────────────────────────────────────────────
@@ -131,6 +137,7 @@ export default function PostPilotApp() {
   const [user,      setUser]      = useState(null);
   const [loading,   setLoading]   = useState(true);
   const [usingDemo, setUsingDemo] = useState(false);
+  const [isOwner,   setIsOwner]   = useState(false);
 
   // ── Company state (persisted to localStorage) ──────────────
   const [companies, setCompanies] = useState(() => {
@@ -160,7 +167,7 @@ export default function PostPilotApp() {
   useEffect(() => {
     const unsub = supabase.subscribe((ev, s) => {
       if (ev === 'SIGNED_IN')  setUser(s.user);
-      if (ev === 'SIGNED_OUT') { setUser(null); setUsingDemo(false); }
+      if (ev === 'SIGNED_OUT') { setUser(null); setUsingDemo(false); setIsOwner(false); }
     });
 
     if (supabase.configured) {
@@ -206,12 +213,17 @@ export default function PostPilotApp() {
 
   // ── Entry points ───────────────────────────────────────────
   const enterDemo = useCallback(() => {
-    setUsingDemo(true); setIsAdmin(false);
+    setUsingDemo(true); setIsOwner(false);
     setUser({ id: 'demo', email: 'demo@postpilot.app', user_metadata: { display_name: 'Demo User' } });
   }, []);
 
+  const enterOwner = useCallback(() => {
+    setUsingDemo(true); setIsOwner(true);
+    setUser({ id: 'owner', email: 'owner@postpilot.local', user_metadata: { display_name: 'Owner' } });
+  }, []);
+
   const handleSignOut = useCallback(() => {
-    if (usingDemo) { setUser(null); setUsingDemo(false); }
+    if (usingDemo) { setUser(null); setUsingDemo(false); setIsOwner(false); }
     else supabase.signOut();
   }, [usingDemo]);
 
@@ -219,14 +231,14 @@ export default function PostPilotApp() {
 
   return (
     <ErrorBoundary>
-      <AuthContext.Provider value={{ user, usingDemo, supabase }}>
+      <AuthContext.Provider value={{ user, usingDemo, isOwner, supabase }}>
         <CompanyContext.Provider value={{
           companies, activeCompanyId, activeCompany, setActiveCompanyId,
           userAssignments, setUserAssignments, addCompany, updateCompany, deleteCompany,
         }}>
           {user
             ? <MainApp onSignOut={handleSignOut} />
-            : <AuthScreen onDemo={enterDemo} />
+            : <AuthScreen onDemo={enterDemo} onOwner={enterOwner} />
           }
         </CompanyContext.Provider>
       </AuthContext.Provider>
@@ -250,15 +262,17 @@ function Loader() {
 // ─────────────────────────────────────────────────────────────
 // AUTH SCREEN
 // ─────────────────────────────────────────────────────────────
-function AuthScreen({ onDemo }) {
-  const [mode,     setMode]     = useState('login');
-  const [email,    setEmail]    = useState('');
-  const [password, setPassword] = useState('');
-  const [name,     setName]     = useState('');
-  const [error,    setError]    = useState('');
-  const [success,  setSuccess]  = useState('');
-  const [busy,     setBusy]     = useState(false);
-  const lastSubmitRef            = useRef(0);
+function AuthScreen({ onDemo, onOwner }) {
+  const [mode,       setMode]       = useState('login');
+  const [email,      setEmail]      = useState('');
+  const [password,   setPassword]   = useState('');
+  const [name,       setName]       = useState('');
+  const [error,      setError]      = useState('');
+  const [success,    setSuccess]    = useState('');
+  const [busy,       setBusy]       = useState(false);
+  const [ownerPass,  setOwnerPass]  = useState('');
+  const [showOwner,  setShowOwner]  = useState(false);
+  const lastSubmitRef                = useRef(0);
 
   const switchMode = m => { setMode(m); setError(''); setSuccess(''); };
 
@@ -378,6 +392,51 @@ function AuthScreen({ onDemo }) {
               <button className="btn-demo" onClick={onDemo}>👋 Try Demo Mode — no account needed</button>
             </>
           )}
+
+          {/* Owner first-access — only visible when VITE_OWNER_PASS is set in Vercel */}
+          {OWNER_PASS && (
+            <div style={{ marginTop: 16 }}>
+              {!showOwner ? (
+                <button
+                  className="link-btn"
+                  style={{ fontSize: 12, color: '#94A3B8' }}
+                  onClick={() => setShowOwner(true)}
+                >
+                  🔑 Owner access
+                </button>
+              ) : (
+                <div style={{ border: '1px solid #E2E8F0', borderRadius: 10, padding: 16, marginTop: 8, background: '#F8FAFC' }}>
+                  <p style={{ fontSize: 12, color: '#64748B', marginBottom: 10, lineHeight: 1.5 }}>
+                    <strong>First-Access Mode</strong> — enter your owner password to get in
+                    while you set up Supabase. Remove <code>VITE_OWNER_PASS</code> from Vercel
+                    once your real account is created.
+                  </p>
+                  <input
+                    type="password"
+                    placeholder="Owner password"
+                    value={ownerPass}
+                    onChange={e => setOwnerPass(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        if (ownerPass === OWNER_PASS) onOwner();
+                        else setError('Incorrect owner password');
+                      }
+                    }}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid #CBD5E1', marginBottom: 8, boxSizing: 'border-box' }}
+                  />
+                  <button
+                    className="btn-primary btn-full"
+                    onClick={() => {
+                      if (ownerPass === OWNER_PASS) onOwner();
+                      else setError('Incorrect owner password');
+                    }}
+                  >
+                    Enter as Owner
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -388,7 +447,7 @@ function AuthScreen({ onDemo }) {
 // MAIN APP
 // ─────────────────────────────────────────────────────────────
 function MainApp({ onSignOut }) {
-  const { user, usingDemo } = useAuth();
+  const { user, usingDemo, isOwner } = useAuth();
   const { companies, activeCompanyId, userAssignments } = useCompany();
 
   const [tab,         setTab]         = useState('dashboard');
@@ -567,7 +626,7 @@ function MainApp({ onSignOut }) {
     { id: 'posts',     label: 'Posts',     icon: '📝' },
     { id: 'analytics', label: 'Analytics', icon: '📈' },
     { id: 'platforms', label: 'Platforms', icon: '🔌' },
-    ...(!usingDemo ? [{ id: 'admin', label: 'Admin', icon: '⚙️' }] : []),
+    ...(!usingDemo || isOwner ? [{ id: 'admin', label: 'Admin', icon: '⚙️' }] : []),
   ];
 
   return (
@@ -632,10 +691,16 @@ function MainApp({ onSignOut }) {
         ))}
       </nav>
 
-      {usingDemo && (
+      {usingDemo && !isOwner && (
         <div className="demo-banner" role="banner">
           👋 Demo Mode — <strong>sign up free</strong> to save posts to the cloud
           <button className="demo-cta" onClick={onSignOut}>Create Account →</button>
+        </div>
+      )}
+      {isOwner && (
+        <div className="demo-banner" role="banner" style={{ background: '#7C3AED', borderColor: '#6D28D9' }}>
+          🔑 Owner Access — <strong>temporary session.</strong> Set up Supabase, create your account, then remove <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 5px', borderRadius: 4 }}>VITE_OWNER_PASS</code> from Vercel env vars.
+          <button className="demo-cta" onClick={onSignOut}>Sign Out</button>
         </div>
       )}
 
@@ -646,7 +711,7 @@ function MainApp({ onSignOut }) {
         {tab === 'posts'     && <PostsList posts={companyPosts} onEdit={editPost} onDelete={deletePost} />}
         {tab === 'analytics' && <Analytics posts={companyPosts} />}
         {tab === 'platforms' && <PlatformsView connected={connected} onToggle={toggleConnect} />}
-        {tab === 'admin'     && !usingDemo && <AdminPanel />}
+        {tab === 'admin'     && (!usingDemo || isOwner) && <AdminPanel />}
       </main>
 
       {activeModal === 'composer' && (

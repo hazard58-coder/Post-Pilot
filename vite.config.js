@@ -15,9 +15,8 @@ export default defineConfig(({ mode }) => {
       'window.__ENV__': {
         SUPABASE_URL:      JSON.stringify(env.VITE_SUPABASE_URL      || ''),
         SUPABASE_ANON_KEY: JSON.stringify(env.VITE_SUPABASE_ANON_KEY || ''),
-        ADMIN_USERNAME:    JSON.stringify(env.VITE_ADMIN_USERNAME     || ''),
-        ADMIN_PASSWORD:    JSON.stringify(env.VITE_ADMIN_PASSWORD     || ''),
         DEMO_ENABLED:      JSON.stringify(env.VITE_DEMO_ENABLED       ?? 'true'),
+        OWNER_PASS:        JSON.stringify(env.VITE_OWNER_PASS         || ''),
       },
     },
   };
